@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>保研邮件助手</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    :root {
+      --ink: #1a1814;
+      --ink-mid: #4a4640;
+      --ink-light: #8a8680;
+      --paper: #faf8f4;
+      --paper-warm: #f2ede4;
+      --accent: #c0392b;
+      --accent-light: #e8d5d3;
+      --green: #2e7d52;
+      --green-light: #d4ede0;
+      --border: #ddd8cf;
+      --shadow: 0 2px 12px rgba(26,24,20,0.08);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 380px;
+      min-height: 200px;
+      max-height: 90vh;
+      overflow-y: auto;
+      background: var(--paper);
+      font-family: 'Noto Serif SC', 'Songti SC', serif;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* ── Header ── */
+    .header {
+      padding: 14px 18px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--paper-warm);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .header-icon {
+      width: 28px; height: 28px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .header-title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: var(--ink);
+    }
+    .header-sub {
+      font-size: 11px;
+      color: var(--ink-light);
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 1px;
+    }
+
+    /* ── API Key setup ── */
+    #setup-view {
+      padding: 18px;
+    }
+    .setup-desc {
+      font-size: 12px;
+      color: var(--ink-mid);
+      margin-bottom: 12px;
+      line-height: 1.7;
+    }
+    .setup-desc a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .setup-desc a:hover { text-decoration: underline; }
+
+    .field-label {
+      font-size: 11px;
+      color: var(--ink-light);
+      margin-bottom: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.05em;
+    }
+    .field-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--ink);
+      outline: none;
+      transition: border-color 0.15s;
+      margin-bottom: 10px;
+    }
+    .field-input:focus { border-color: var(--accent); }
+
+    .field-input-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .field-input-row .field-input {
+      margin-bottom: 0;
+      flex: 1;
+    }
+
+    /* ── Model selector ── */
+    .model-selector {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .model-btn {
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--paper);
+      font-size: 11px;
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      transition: all 0.15s;
+    }
+    .model-btn:hover { border-color: var(--ink-mid); }
+    .model-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* ── Info form (name, institute, research brief) ── */
+    #info-section {
+      padding: 14px 18px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 10px;
+    }
+    textarea.field-input {
+      resize: vertical;
+      min-height: 52px;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 12px;
+    }
+
+    /* ── Main action area ── */
+    #main-view {
+      padding: 14px 18px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 10px 14px;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: #a93226; }
+    .btn-primary:disabled { background: var(--ink-light); cursor: not-allowed; }
+    .btn-secondary {
+      background: var(--paper-warm);
+      color: var(--ink-mid);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--ink-mid); }
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12px;
+      width: auto;
+      font-weight: 500;
+    }
+    .btn-save {
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 16px;
+      font-size: 12px;
+      width: auto;
+      font-weight: 600;
+    }
+    .btn-save:hover { background: #a93226; }
+
+    /* ── Status / loading ── */
+    .status-box {
+      padding: 10px 14px;
+      border-radius: 7px;
+      font-size: 12px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .status-loading {
+      background: #eef4ff;
+      color: #1a56c4;
+      border: 1px solid #c5d8f8;
+    }
+    .status-error {
+      background: #fff0f0;
+      color: #b91c1c;
+      border: 1px solid var(--accent-light);
+    }
+    .status-success {
+      background: var(--green-light);
+      color: var(--green);
+      border: 1px solid #b5dcc7;
+    }
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid #c5d8f8;
+      border-top-color: #1a56c4;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Result card ── */
+    #result-view { padding: 14px 18px; display: none; }
+
+    .prof-card {
+      background: var(--paper-warm);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .prof-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .prof-email {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+    .prof-research {
+      font-size: 12px;
+      color: var(--ink-mid);
+      line-height: 1.65;
+    }
+    .research-tag {
+      display: inline-block;
+      background: var(--accent-light);
+      color: var(--accent);
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      margin: 2px 2px 0 0;
+    }
+
+    .email-section {
+      margin-bottom: 12px;
+    }
+    .email-label {
+      font-size: 11px;
+      color: var(--ink-light);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+    .email-subject-input {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 12px;
+      color: var(--ink);
+      outline: none;
+      margin-bottom: 8px;
+    }
+    .email-subject-input:focus { border-color: var(--accent); }
+    .email-body-textarea {
+      width: 100%;
+      height: 180px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 12px;
+      color: var(--ink);
+      line-height: 1.7;
+      outline: none;
+      resize: vertical;
+    }
+    .email-body-textarea:focus { border-color: var(--accent); }
+
+    .action-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .action-row .btn { flex: 1; }
+    .btn-send {
+      background: var(--green);
+      color: #fff;
+      font-weight: 600;
+    }
+    .btn-send:hover { background: #265f40; }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 12px 0;
+    }
+
+    /* ── Settings toggle ── */
+    .settings-link {
+      font-size: 11px;
+      color: var(--ink-light);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      margin-top: 8px;
+      display: inline-block;
+    }
+    .settings-link:hover { color: var(--ink-mid); }
+
+    #settings-view { padding: 14px 18px; display: none; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">✉</div>
+  <div>
+    <div class="header-title">保研邮件助手</div>
+    <div class="header-sub">AI · 一键联系导师</div>
+  </div>
+</div>
+
+<!-- ① API Key 初始设置 -->
+<div id="setup-view">
+  <div class="setup-desc">
+    选择模型商并填写 API Key 来分析页面并生成邮件。
+  </div>
+
+  <div class="field-label">选择模型商</div>
+  <div class="model-selector">
+    <button class="model-btn active" data-model="anthropic">Anthropic</button>
+    <button class="model-btn" data-model="minimax">Minimax</button>
+    <button class="model-btn" data-model="openai">OpenAI 兼容</button>
+  </div>
+
+  <div class="field-label">API KEY</div>
+  <div class="field-input-row">
+    <input class="field-input" type="password" id="api-key-input" placeholder="sk-..." />
+    <button class="btn btn-save" id="save-key-btn">保存</button>
+  </div>
+  <div id="setup-status"></div>
+</div>
+
+<!-- ② 个人信息（有API key后显示） -->
+<div id="info-section" class="hidden">
+  <div class="info-grid">
+    <div>
+      <div class="field-label">你的姓名</div>
+      <input class="field-input" type="text" id="my-name" placeholder="张三" />
+    </div>
+    <div>
+      <div class="field-label">本科院校</div>
+      <input class="field-input" type="text" id="my-school" placeholder="XX大学" />
+    </div>
+  </div>
+  <div>
+    <div class="field-label">专业 / GPA / 简要背景</div>
+    <textarea class="field-input" id="my-background" placeholder="计算机科学 GPA 3.8/4.0，熟悉机器学习，参与过NLP项目…"></textarea>
+  </div>
+  <div style="padding-bottom:14px">
+    <button class="btn btn-secondary btn-sm" id="save-info-btn">保存个人信息</button>
+    <span id="info-saved-tip" style="font-size:11px;color:var(--green);margin-left:8px;display:none">✓ 已保存</span>
+  </div>
+</div>
+
+<!-- ③ 主操作区 -->
+<div id="main-view" class="hidden">
+  <div id="status-area"></div>
+  <button class="btn btn-primary" id="analyze-btn">📄 分析当前页面并生成邮件</button>
+  <div style="text-align:center">
+    <span class="settings-link" id="open-settings-btn">⚙ 修改设置</span>
+  </div>
+</div>
+
+<!-- ④ 结果展示 -->
+<div id="result-view">
+  <div class="prof-card" id="prof-info-card">
+    <div class="prof-name" id="prof-name-el">—</div>
+    <div class="prof-email" id="prof-email-el">未检测到邮箱</div>
+    <div id="prof-tags-el"></div>
+    <div class="prof-research" id="prof-research-el" style="margin-top:6px"></div>
+  </div>
+
+  <div class="email-section">
+    <div class="email-label">邮件主题</div>
+    <input class="email-subject-input" type="text" id="email-subject" />
+    <div class="email-label">邮件正文</div>
+    <textarea class="email-body-textarea" id="email-body"></textarea>
+  </div>
+
+  <div class="action-row">
+    <button class="btn btn-secondary" id="back-btn">← 重新分析</button>
+    <button class="btn btn-send" id="send-btn">📨 打开邮件客户端</button>
+  </div>
+</div>
+
+<!-- ⑤ 设置面板 -->
+<div id="settings-view">
+  <div class="field-label">选择模型商</div>
+  <div class="model-selector" id="settings-model-selector">
+    <button class="model-btn" data-model="anthropic">Anthropic</button>
+    <button class="model-btn" data-model="minimax">Minimax</button>
+    <button class="model-btn" data-model="openai">OpenAI 兼容</button>
+  </div>
+
+  <div class="field-label">修改 API KEY</div>
+  <div class="field-input-row">
+    <input class="field-input" type="password" id="settings-key-input" placeholder="sk-..." />
+    <button class="btn btn-save" id="settings-save-key-btn">保存</button>
+  </div>
+  <div class="divider"></div>
+  <div class="info-grid">
+    <div>
+      <div class="field-label">你的姓名</div>
+      <input class="field-input" type="text" id="settings-name" placeholder="张三" />
+    </div>
+    <div>
+      <div class="field-label">本科院校</div>
+      <input class="field-input" type="text" id="settings-school" placeholder="XX大学" />
+    </div>
+  </div>
+  <div>
+    <div class="field-label">专业 / GPA / 背景</div>
+    <textarea class="field-input" id="settings-background" placeholder="计算机科学 GPA 3.8/4.0…"></textarea>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:4px">
+    <button class="btn btn-save btn-sm" id="settings-save-info-btn">保存信息</button>
+    <button class="btn btn-secondary btn-sm" id="settings-back-btn">← 返回</button>
+  </div>
+  <div id="settings-tip" style="font-size:11px;color:var(--green);margin-top:6px;display:none">✓ 已保存</div>
+</div>
+
+<script src="sidepanel.js"></script>
+</body>
+</html>
