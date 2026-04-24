@@ -67,6 +67,44 @@
       font-family: 'JetBrains Mono', monospace;
       margin-top: 1px;
     }
+    .lang-toggle {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .lang-toggle label {
+      font-size: 10px;
+      color: var(--ink-light);
+      cursor: pointer;
+    }
+    .lang-switch {
+      appearance: none;
+      width: 32px;
+      height: 18px;
+      background: var(--ink-light);
+      border-radius: 9px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .lang-switch::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      background: #fff;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: left 0.2s;
+    }
+    .lang-switch:checked {
+      background: var(--accent);
+    }
+    .lang-switch:checked::after {
+      left: 16px;
+    }
 
     /* ── API Key setup ── */
     #setup-view {
@@ -358,25 +396,29 @@
     <div class="header-title">保研邮件助手</div>
     <div class="header-sub">AI · 一键联系导师</div>
   </div>
+  <div class="lang-toggle">
+    <label for="lang-switch">EN</label>
+    <input type="checkbox" id="lang-switch" class="lang-switch" />
+  </div>
 </div>
 
 <!-- ① API Key 初始设置 -->
 <div id="setup-view">
-  <div class="setup-desc">
+  <div class="setup-desc" data-i18n="setupDesc">
     选择模型商并填写 API Key 来分析页面并生成邮件。
   </div>
 
-  <div class="field-label">选择模型商</div>
+  <div class="field-label" data-i18n="provider">选择模型商</div>
   <div class="model-selector">
     <button class="model-btn active" data-model="anthropic">Anthropic</button>
     <button class="model-btn" data-model="minimax">Minimax</button>
     <button class="model-btn" data-model="openai">OpenAI 兼容</button>
   </div>
 
-  <div class="field-label">API KEY</div>
+  <div class="field-label" data-i18n="apiKeyLabel">API KEY</div>
   <div class="field-input-row">
     <input class="field-input" type="password" id="api-key-input" placeholder="sk-..." />
-    <button class="btn btn-save" id="save-key-btn">保存</button>
+    <button class="btn btn-save" id="save-key-btn" data-i18n="saveBtn">保存</button>
   </div>
   <div id="setup-status"></div>
 </div>
@@ -385,30 +427,30 @@
 <div id="info-section" class="hidden">
   <div class="info-grid">
     <div>
-      <div class="field-label">你的姓名</div>
+      <div class="field-label" data-i18n="yourName">你的姓名</div>
       <input class="field-input" type="text" id="my-name" placeholder="张三" />
     </div>
     <div>
-      <div class="field-label">本科院校</div>
+      <div class="field-label" data-i18n="yourSchool">本科院校</div>
       <input class="field-input" type="text" id="my-school" placeholder="XX大学" />
     </div>
   </div>
   <div>
-    <div class="field-label">专业 / GPA / 简要背景</div>
+    <div class="field-label" data-i18n="background">专业 / GPA / 简要背景</div>
     <textarea class="field-input" id="my-background" placeholder="计算机科学 GPA 3.8/4.0，熟悉机器学习，参与过NLP项目…"></textarea>
   </div>
   <div style="padding-bottom:14px">
-    <button class="btn btn-secondary btn-sm" id="save-info-btn">保存个人信息</button>
-    <span id="info-saved-tip" style="font-size:11px;color:var(--green);margin-left:8px;display:none">✓ 已保存</span>
+    <button class="btn btn-secondary btn-sm" id="save-info-btn" data-i18n="saveInfo">保存个人信息</button>
+    <span id="info-saved-tip" style="font-size:11px;color:var(--green);margin-left:8px;display:none" data-i18n="saved">✓ 已保存</span>
   </div>
 </div>
 
 <!-- ③ 主操作区 -->
 <div id="main-view" class="hidden">
   <div id="status-area"></div>
-  <button class="btn btn-primary" id="analyze-btn">📄 分析当前页面并生成邮件</button>
+  <button class="btn btn-primary" id="analyze-btn" data-i18n="analyze">📄 分析当前页面并生成邮件</button>
   <div style="text-align:center">
-    <span class="settings-link" id="open-settings-btn">⚙ 修改设置</span>
+    <span class="settings-link" id="open-settings-btn" data-i18n="settings">⚙ 修改设置</span>
   </div>
 </div>
 
@@ -431,6 +473,7 @@
   <div class="action-row">
     <button class="btn btn-secondary" id="back-btn">← 重新分析</button>
     <button class="btn btn-send" id="send-btn">📨 打开邮件客户端</button>
+    <button class="btn btn-secondary" id="copy-btn" data-i18n="copyToClipboard">📋 复制邮件内容</button>
   </div>
 </div>
 
