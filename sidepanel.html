@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>保研邮件助手</title>
+  <title>mail2professor</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -99,27 +99,18 @@
       left: 2px;
       transition: left 0.2s;
     }
-    .lang-switch:checked {
-      background: var(--accent);
-    }
-    .lang-switch:checked::after {
-      left: 16px;
-    }
+    .lang-switch:checked { background: var(--accent); }
+    .lang-switch:checked::after { left: 16px; }
 
     /* ── API Key setup ── */
-    #setup-view {
-      padding: 18px;
-    }
+    #setup-view { padding: 18px; }
     .setup-desc {
       font-size: 12px;
       color: var(--ink-mid);
       margin-bottom: 12px;
       line-height: 1.7;
     }
-    .setup-desc a {
-      color: var(--accent);
-      text-decoration: none;
-    }
+    .setup-desc a { color: var(--accent); text-decoration: none; }
     .setup-desc a:hover { text-decoration: underline; }
 
     .field-label {
@@ -143,16 +134,19 @@
       margin-bottom: 10px;
     }
     .field-input:focus { border-color: var(--accent); }
+    .field-hint {
+      font-size: 10px;
+      color: var(--ink-light);
+      margin: -6px 0 10px;
+      line-height: 1.5;
+    }
 
     .field-input-row {
       display: flex;
       gap: 6px;
       margin-bottom: 10px;
     }
-    .field-input-row .field-input {
-      margin-bottom: 0;
-      flex: 1;
-    }
+    .field-input-row .field-input { margin-bottom: 0; flex: 1; }
 
     /* ── Model selector ── */
     .model-selector {
@@ -178,7 +172,7 @@
       border-color: var(--accent);
     }
 
-    /* ── Info form (name, institute, research brief) ── */
+    /* ── Info form ── */
     #info-section {
       padding: 14px 18px 0;
       border-bottom: 1px solid var(--border);
@@ -196,9 +190,7 @@
     }
 
     /* ── Main action area ── */
-    #main-view {
-      padding: 14px 18px;
-    }
+    #main-view { padding: 14px 18px; }
 
     .btn {
       width: 100%;
@@ -212,10 +204,7 @@
       letter-spacing: 0.04em;
       transition: all 0.15s;
     }
-    .btn-primary {
-      background: var(--accent);
-      color: #fff;
-    }
+    .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:hover { background: #a93226; }
     .btn-primary:disabled { background: var(--ink-light); cursor: not-allowed; }
     .btn-secondary {
@@ -224,12 +213,7 @@
       border: 1px solid var(--border);
     }
     .btn-secondary:hover { border-color: var(--ink-mid); }
-    .btn-sm {
-      padding: 6px 12px;
-      font-size: 12px;
-      width: auto;
-      font-weight: 500;
-    }
+    .btn-sm { padding: 6px 12px; font-size: 12px; width: auto; font-weight: 500; }
     .btn-save {
       background: var(--accent);
       color: #fff;
@@ -239,6 +223,45 @@
       font-weight: 600;
     }
     .btn-save:hover { background: #a93226; }
+
+    /* ── Task presets ── */
+    .task-chips {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 10px 0 4px;
+    }
+    .chip {
+      padding: 4px 9px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      background: transparent;
+      font-size: 11px;
+      color: var(--ink-mid);
+      cursor: pointer;
+      font-family: 'Noto Serif SC', serif;
+      transition: all 0.15s;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
+
+    #task-input {
+      width: 100%;
+      min-height: 62px;
+      padding: 9px 11px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #fff;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 12px;
+      line-height: 1.65;
+      color: var(--ink);
+      resize: vertical;
+      outline: none;
+    }
+    #task-input:focus { border-color: var(--accent); }
+
+    .run-row { display: flex; gap: 8px; margin-top: 10px; }
+    .run-row .btn { flex: 1; }
 
     /* ── Status / loading ── */
     .status-box {
@@ -250,21 +273,9 @@
       align-items: flex-start;
       gap: 8px;
     }
-    .status-loading {
-      background: #eef4ff;
-      color: #1a56c4;
-      border: 1px solid #c5d8f8;
-    }
-    .status-error {
-      background: #fff0f0;
-      color: #b91c1c;
-      border: 1px solid var(--accent-light);
-    }
-    .status-success {
-      background: var(--green-light);
-      color: var(--green);
-      border: 1px solid #b5dcc7;
-    }
+    .status-loading { background: #eef4ff; color: #1a56c4; border: 1px solid #c5d8f8; }
+    .status-error { background: #fff0f0; color: #b91c1c; border: 1px solid var(--accent-light); }
+    .status-success { background: var(--green-light); color: var(--green); border: 1px solid #b5dcc7; }
     .spinner {
       width: 14px; height: 14px;
       border: 2px solid #c5d8f8;
@@ -276,8 +287,68 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ── Agent trace ── */
+    .trace {
+      margin-top: 12px;
+      border-top: 1px dashed var(--border);
+      padding-top: 8px;
+    }
+    .trace-title {
+      font-size: 10px;
+      color: var(--ink-light);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+    .trace-row {
+      font-size: 11.5px;
+      line-height: 1.6;
+      margin-bottom: 5px;
+      padding-left: 14px;
+      position: relative;
+    }
+    .trace-row::before {
+      content: '';
+      position: absolute;
+      left: 4px;
+      top: 8px;
+      width: 4px; height: 4px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+    .trace-thought { color: var(--ink-mid); font-style: italic; }
+    .trace-tool { font-family: 'JetBrains Mono', monospace; color: #1a56c4; word-break: break-all; }
+    .trace-tool::before { background: #1a56c4; }
+    .trace-obs { color: var(--ink-light); }
+    .trace-obs::before { background: var(--green); }
+    .trace-final { color: var(--green); font-weight: 600; }
+    .trace-final::before { background: var(--green); }
+    .trace-error { color: #b91c1c; }
+    .trace-error::before { background: #b91c1c; }
+    .trace-obs summary {
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      color: var(--ink-light);
+      outline: none;
+    }
+    .trace-obs pre {
+      margin-top: 4px;
+      padding: 6px 8px;
+      background: var(--paper-warm);
+      border-radius: 5px;
+      font-size: 10px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 160px;
+      overflow: auto;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--ink-mid);
+    }
+
     /* ── Result card ── */
-    #result-view { padding: 14px 18px; display: none; }
+    #result-view { padding: 14px 18px; }
 
     .prof-card {
       background: var(--paper-warm);
@@ -286,23 +357,14 @@
       padding: 12px 14px;
       margin-bottom: 12px;
     }
-    .prof-name {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--ink);
-      margin-bottom: 4px;
-    }
+    .prof-name { font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
     .prof-email {
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
       color: var(--accent);
       margin-bottom: 6px;
     }
-    .prof-research {
-      font-size: 12px;
-      color: var(--ink-mid);
-      line-height: 1.65;
-    }
+    .prof-research { font-size: 12px; color: var(--ink-mid); line-height: 1.65; }
     .research-tag {
       display: inline-block;
       background: var(--accent-light);
@@ -313,9 +375,7 @@
       margin: 2px 2px 0 0;
     }
 
-    .email-section {
-      margin-bottom: 12px;
-    }
+    .email-section { margin-bottom: 12px; }
     .email-label {
       font-size: 11px;
       color: var(--ink-light);
@@ -352,24 +412,12 @@
     }
     .email-body-textarea:focus { border-color: var(--accent); }
 
-    .action-row {
-      display: flex;
-      gap: 8px;
-      margin-top: 4px;
-    }
+    .action-row { display: flex; gap: 8px; margin-top: 4px; }
     .action-row .btn { flex: 1; }
-    .btn-send {
-      background: var(--green);
-      color: #fff;
-      font-weight: 600;
-    }
+    .btn-send { background: var(--green); color: #fff; font-weight: 600; }
     .btn-send:hover { background: #265f40; }
 
-    .divider {
-      height: 1px;
-      background: var(--border);
-      margin: 12px 0;
-    }
+    .divider { height: 1px; background: var(--border); margin: 12px 0; }
 
     /* ── Settings toggle ── */
     .settings-link {
@@ -383,7 +431,74 @@
     }
     .settings-link:hover { color: var(--ink-mid); }
 
-    #settings-view { padding: 14px 18px; display: none; }
+    #settings-view { padding: 14px 18px; }
+
+    /* ── Pipeline (导师库) ── */
+    #pipeline-view { padding: 14px 18px; }
+    .pipeline-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .pipeline-count {
+      font-size: 11px;
+      color: var(--ink-light);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .prof-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .prof-row-main { flex: 1; min-width: 0; }
+    .prof-row-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .prof-row-meta {
+      font-size: 10px;
+      color: var(--ink-light);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status-select {
+      font-size: 10px;
+      font-family: 'Noto Serif SC', serif;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: #fff;
+      padding: 2px 3px;
+      color: var(--ink-mid);
+      outline: none;
+      max-width: 76px;
+    }
+    .status-select:focus { border-color: var(--accent); }
+    .icon-btn {
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 5px;
+      width: 22px; height: 22px;
+      font-size: 11px;
+      line-height: 1;
+      cursor: pointer;
+      color: var(--ink-mid);
+      flex-shrink: 0;
+    }
+    .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .empty-hint {
+      font-size: 11.5px;
+      color: var(--ink-light);
+      line-height: 1.7;
+      padding: 10px 0;
+    }
 
     .hidden { display: none !important; }
   </style>
@@ -393,8 +508,8 @@
 <div class="header">
   <div class="header-icon">✉</div>
   <div>
-    <div class="header-title">保研邮件助手</div>
-    <div class="header-sub">AI · 一键联系导师</div>
+    <div class="header-title">mail2professor</div>
+    <div class="header-sub" id="header-sub">agent · 找导师 / 写邮件</div>
   </div>
   <div class="lang-toggle">
     <label for="lang-switch">EN</label>
@@ -405,17 +520,18 @@
 <!-- ① API Key 初始设置 -->
 <div id="setup-view">
   <div class="setup-desc" data-i18n="setupDesc">
-    选择模型商并填写 API Key 来分析页面并生成邮件。
+    选择模型商并填写 API Key。Agent 会自己读页面、搜索、维护导师库并起草邮件。
   </div>
 
-  <div class="field-label" data-i18n="provider">选择模型商</div>
-  <div class="model-selector">
-    <button class="model-btn active" data-model="anthropic">Anthropic</button>
-    <button class="model-btn" data-model="minimax">Minimax</button>
-    <button class="model-btn" data-model="openai">OpenAI 兼容</button>
-  </div>
+  <div class="field-label" data-i18n="providerLabel">选择模型商</div>
+  <div class="model-selector" id="setup-provider-selector"></div>
 
-  <div class="field-label" data-i18n="apiKeyLabel">API KEY</div>
+  <div class="field-label">BASE URL</div>
+  <input class="field-input" type="text" id="setup-base-url" placeholder="https://api.deepseek.com/v1" />
+  <div class="field-label" data-i18n="modelLabel">模型</div>
+  <input class="field-input" type="text" id="setup-model" placeholder="deepseek-chat" />
+
+  <div class="field-label">API KEY</div>
   <div class="field-input-row">
     <input class="field-input" type="password" id="api-key-input" placeholder="sk-..." />
     <button class="btn btn-save" id="save-key-btn" data-i18n="saveBtn">保存</button>
@@ -423,7 +539,7 @@
   <div id="setup-status"></div>
 </div>
 
-<!-- ② 个人信息（有API key后显示） -->
+<!-- ② 个人信息 -->
 <div id="info-section" class="hidden">
   <div class="info-grid">
     <div>
@@ -448,71 +564,108 @@
 <!-- ③ 主操作区 -->
 <div id="main-view" class="hidden">
   <div id="status-area"></div>
-  <button class="btn btn-primary" id="analyze-btn" data-i18n="analyze">📄 分析当前页面并生成邮件</button>
+
+  <div class="field-label" data-i18n="taskLabel">给 agent 的任务</div>
+  <textarea id="task-input"></textarea>
+  <div class="task-chips" id="task-chips"></div>
+
+  <div class="run-row">
+    <button class="btn btn-primary" id="run-btn" data-i18n="runBtn">▶ 开始</button>
+    <button class="btn btn-secondary hidden" id="stop-btn" data-i18n="stopBtn">■ 停止</button>
+  </div>
+
+  <div class="trace hidden" id="trace-panel">
+    <div class="trace-title" id="trace-title">AGENT TRACE</div>
+    <div id="trace-body"></div>
+  </div>
+
   <div style="text-align:center">
-    <span class="settings-link" id="open-settings-btn" data-i18n="settings">⚙ 修改设置</span>
+    <span class="settings-link" id="open-pipeline-btn" data-i18n="pipelineLink">📚 导师库</span>
+    <span style="color:var(--border)"> · </span>
+    <span class="settings-link" id="open-settings-btn" data-i18n="settings">⚙ 设置</span>
   </div>
 </div>
 
 <!-- ④ 结果展示 -->
-<div id="result-view">
+<div id="result-view" class="hidden">
   <div class="prof-card" id="prof-info-card">
     <div class="prof-name" id="prof-name-el">—</div>
-    <div class="prof-email" id="prof-email-el">未检测到邮箱</div>
+    <div class="prof-email" id="prof-email-el"></div>
     <div id="prof-tags-el"></div>
     <div class="prof-research" id="prof-research-el" style="margin-top:6px"></div>
   </div>
 
   <div class="email-section">
-    <div class="email-label">邮件主题</div>
+    <div class="email-label" data-i18n="toLabel">收件人</div>
+    <input class="email-subject-input" type="text" id="email-to" placeholder="professor@university.edu" />
+    <div class="email-label" data-i18n="subjectLabel">邮件主题</div>
     <input class="email-subject-input" type="text" id="email-subject" />
-    <div class="email-label">邮件正文</div>
+    <div class="email-label" data-i18n="bodyLabel">邮件正文</div>
     <textarea class="email-body-textarea" id="email-body"></textarea>
   </div>
 
   <div class="action-row">
-    <button class="btn btn-secondary" id="back-btn">← 重新分析</button>
-    <button class="btn btn-send" id="send-btn">📨 打开邮件客户端</button>
+    <button class="btn btn-secondary" id="back-btn" data-i18n="back">← 返回</button>
+    <button class="btn btn-send" id="send-btn" data-i18n="sendEmail">📨 打开邮件客户端</button>
+  </div>
+  <div class="action-row" style="margin-top:8px">
     <button class="btn btn-secondary" id="copy-btn" data-i18n="copyToClipboard">📋 复制邮件内容</button>
+    <button class="btn btn-secondary" id="mark-contacted-btn" data-i18n="markContacted">✓ 标记为已联系</button>
   </div>
 </div>
 
-<!-- ⑤ 设置面板 -->
-<div id="settings-view">
-  <div class="field-label">选择模型商</div>
-  <div class="model-selector" id="settings-model-selector">
-    <button class="model-btn" data-model="anthropic">Anthropic</button>
-    <button class="model-btn" data-model="minimax">Minimax</button>
-    <button class="model-btn" data-model="openai">OpenAI 兼容</button>
+<!-- ⑤ 导师库 -->
+<div id="pipeline-view" class="hidden">
+  <div class="pipeline-head">
+    <div class="pipeline-count" id="pipeline-count"></div>
+    <button class="btn btn-secondary btn-sm" id="export-btn" data-i18n="exportBtn">导出 JSON</button>
   </div>
+  <div id="pipeline-list"></div>
+  <div style="text-align:center;margin-top:10px">
+    <span class="settings-link" id="pipeline-back-btn" data-i18n="backToMain">← 返回</span>
+  </div>
+</div>
 
-  <div class="field-label">修改 API KEY</div>
+<!-- ⑥ 设置面板 -->
+<div id="settings-view" class="hidden">
+  <div class="field-label" data-i18n="providerLabel">选择模型商</div>
+  <div class="model-selector" id="settings-provider-selector"></div>
+
+  <div class="field-label">BASE URL</div>
+  <input class="field-input" type="text" id="settings-base-url" />
+  <div class="field-label" data-i18n="modelLabel">模型</div>
+  <input class="field-input" type="text" id="settings-model" />
+
+  <div class="field-label" data-i18n="changeKey">修改 API KEY</div>
   <div class="field-input-row">
     <input class="field-input" type="password" id="settings-key-input" placeholder="sk-..." />
-    <button class="btn btn-save" id="settings-save-key-btn">保存</button>
   </div>
+
+  <div class="field-label" data-i18n="maxSteps">单次任务最大步数</div>
+  <input class="field-input" type="number" id="settings-max-steps" min="1" max="30" />
+
   <div class="divider"></div>
   <div class="info-grid">
     <div>
-      <div class="field-label">你的姓名</div>
+      <div class="field-label" data-i18n="yourName">你的姓名</div>
       <input class="field-input" type="text" id="settings-name" placeholder="张三" />
     </div>
     <div>
-      <div class="field-label">本科院校</div>
+      <div class="field-label" data-i18n="yourSchool">本科院校</div>
       <input class="field-input" type="text" id="settings-school" placeholder="XX大学" />
     </div>
   </div>
   <div>
-    <div class="field-label">专业 / GPA / 背景</div>
+    <div class="field-label" data-i18n="background">专业 / GPA / 背景</div>
     <textarea class="field-input" id="settings-background" placeholder="计算机科学 GPA 3.8/4.0…"></textarea>
   </div>
   <div style="display:flex;gap:8px;margin-top:4px">
-    <button class="btn btn-save btn-sm" id="settings-save-info-btn">保存信息</button>
-    <button class="btn btn-secondary btn-sm" id="settings-back-btn">← 返回</button>
+    <button class="btn btn-save btn-sm" id="settings-save-btn" data-i18n="saveBtn">保存</button>
+    <button class="btn btn-secondary btn-sm" id="settings-back-btn" data-i18n="backToMain">← 返回</button>
   </div>
   <div id="settings-tip" style="font-size:11px;color:var(--green);margin-top:6px;display:none">✓ 已保存</div>
 </div>
 
-<script src="sidepanel.js"></script>
+<script type="module" src="sidepanel.js"></script>
 </body>
 </html>

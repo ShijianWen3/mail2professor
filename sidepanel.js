@@ -1,595 +1,678 @@
-// sidepanel.js
+// sidepanel.js —— UI 层：任务输入、agent trace 渲染、邮件确认、导师库
+//
+// 分工：
+//   lib/providers.js  各家 API → 统一工具调用
+//   lib/agent.js      ReAct 循环（注入 chatFn 即可换成 Python 后端）
+//   lib/tools.js      agent 的浏览器工具
+//   lib/store.js      导师库 + 设置
+//   sidepanel.js      只负责界面和状态
 
-// ─── Translations ────────────────────────────────────────────────────────────
+import { PRESETS, presetOf, resolveConfig } from './lib/providers.js';
+import { Store, getSettings, setSettings, STATUSES } from './lib/store.js';
+import { runAgent, buildSystemPrompt, DEFAULT_MAX_STEPS, describeProvider } from './lib/agent.js';
+import { createTools } from './lib/tools.js';
+
+// ─── 文案 ───────────────────────────────────────────────────────────────────
 const i18n = {
   en: {
-    setupDesc: 'Select model provider and enter API Key to analyze pages and generate emails.',
-    apiKeyLabel: 'API KEY',
-    saveBtn: 'Save',
-    yourName: 'Your Name',
-    yourSchool: 'Your School',
-    background: 'Major / GPA / Background',
-    saveInfo: 'Save Info',
-    saved: '✓ Saved',
-    analyze: '📄 Analyze & Generate Email',
-    settings: '⚙ Settings',
-    emailSubject: 'Subject',
-    emailBody: 'Email Body',
-    back: '← Back',
-    sendEmail: '📨 Open Mail',
-    copyToClipboard: '📋 Copy Email',
-    copied: '✓ Copied!',
-    profName: 'Professor',
-    noEmail: 'No email detected',
-    errorApiKey: 'Please enter API Key',
-    errorFormat: 'Invalid format, should start with',
+    setupDesc: 'Pick a provider and paste your API Key. The agent reads pages, searches, keeps a professor CRM and drafts the email itself.',
+    providerLabel: 'PROVIDER', modelLabel: 'MODEL',
+    apiKeyLabel: 'API KEY', saveBtn: 'Save', saved: '✓ Saved',
+    yourName: 'Your Name', yourSchool: 'Your School', background: 'Major / GPA / Background',
+    saveInfo: 'Save Info', changeKey: 'CHANGE API KEY', maxSteps: 'MAX STEPS PER TASK',
+    taskLabel: 'TASK FOR THE AGENT', runBtn: '▶ Run', stopBtn: '■ Stop',
+    taskDefault: 'Analyze the professor page I have open: confirm name, email, 3-6 research keywords and a short summary, save to the CRM, then draft a personalized email I can send after review.',
+    taskDig: 'Research the professor on my current page: search their recent papers and lab homepage, find 3 concrete research angles I could contribute to, then rewrite a stronger email based on them.',
+    taskFaculty: 'My current page may be a faculty listing: save each professor to the CRM (name + homepage link), then tell me how many there are and who has an email.',
+    pipelineLink: '📚 Professor CRM', settings: '⚙ Settings', backToMain: '← Back',
+    exportBtn: 'Export JSON',
+    toLabel: 'TO', subjectLabel: 'SUBJECT', bodyLabel: 'BODY',
+    back: '← Back', sendEmail: '📨 Open Mail', copyToClipboard: '📋 Copy', copied: '✓ Copied!',
+    markContacted: '✓ Mark contacted', markedContacted: '✓ Marked as contacted',
+    traceTitle: 'AGENT TRACE',
+    thinking: (step) => `Step ${step}: thinking…`,
+    running: 'The agent is working. Steps are shown below.',
+    stopped: 'Stopped by user.',
+    doneWithDraft: 'Done. The email draft is below — review and send.',
+    doneNoDraft: 'Done. The agent did not produce an email draft.',
+    errorApiKey: 'Please set your API Key first',
     errorContent: 'Cannot read page, please refresh and retry',
-    errorTooShort: 'Page content too short, may not be a professor page',
-    loadingRead: 'Reading page content...',
-    loadingAnalyze: 'Analyzing professor info with AI...',
-    aiError: 'AI error:',
-    noEmailAlert: 'No email detected, please fill in recipient manually.',
+    aiError: 'AI error: ',
+    emptyPipeline: 'No professors saved yet. Run a task on a professor page and the agent will fill this in.',
+    pipelineCount: (n) => `${n} professor(s)`,
+    status: { new: 'New', drafted: 'Drafted', contacted: 'Contacted', replied: 'Replied', meeting: 'Meeting', offer: 'Offer', declined: 'Declined', archived: 'Archived' },
+    observation: (len) => `observation · ${len} chars`,
+    noEmailAlert: 'No recipient yet — fill it in manually before sending.'
   },
   zh: {
-    setupDesc: '选择模型商并填写 API Key 来分析页面并生成邮件。',
-    apiKeyLabel: 'API KEY',
-    saveBtn: '保存',
-    yourName: '你的姓名',
-    yourSchool: '本科院校',
-    background: '专业 / GPA / 简要背景',
-    saveInfo: '保存个人信息',
-    saved: '✓ 已保存',
-    analyze: '📄 分析当前页面并生成邮件',
-    settings: '⚙ 修改设置',
-    emailSubject: '邮件主题',
-    emailBody: '邮件正文',
-    back: '← 重新分析',
-    sendEmail: '📨 打开邮件客户端',
-    copyToClipboard: '📋 复制邮件内容',
-    copied: '✓ 已复制到剪切板',
-    profName: '导师姓名',
-    noEmail: '未检测到邮箱',
+    setupDesc: '选择模型商并填写 API Key。Agent 会自己读页面、搜索、维护导师库并起草邮件。',
+    providerLabel: '选择模型商', modelLabel: '模型',
+    apiKeyLabel: 'API KEY', saveBtn: '保存', saved: '✓ 已保存',
+    yourName: '你的姓名', yourSchool: '本科院校', background: '专业 / GPA / 简要背景',
+    saveInfo: '保存个人信息', changeKey: '修改 API KEY', maxSteps: '单次任务最大步数',
+    taskLabel: '给 agent 的任务', runBtn: '▶ 开始', stopBtn: '■ 停止',
+    taskDefault: '请分析我当前打开的这位导师的主页：确认他的姓名、邮箱、研究方向（3-6 个关键词）和一两句研究总结，存入导师库，然后起草一封我确认后就能发的联系邮件。',
+    taskDig: '请深入调研我当前打开这位导师：搜索他近两年的论文和课题组主页，找出 3 个我能具体切入的研究点，然后据此写一封更有说服力的邮件。',
+    taskFaculty: '我当前打开的可能是院系师资列表页：先把页面上的导师逐个存入导师库（姓名 + 主页链接），读完再告诉我总共几位、哪些有邮箱。',
+    pipelineLink: '📚 导师库', settings: '⚙ 设置', backToMain: '← 返回',
+    exportBtn: '导出 JSON',
+    toLabel: '收件人', subjectLabel: '邮件主题', bodyLabel: '邮件正文',
+    back: '← 返回', sendEmail: '📨 打开邮件客户端', copyToClipboard: '📋 复制邮件', copied: '✓ 已复制',
+    markContacted: '✓ 标记为已联系', markedContacted: '✓ 已标记',
+    traceTitle: 'AGENT TRACE',
+    thinking: (step) => `第 ${step} 步：思考中…`,
+    running: 'agent 正在工作，过程见下方。',
+    stopped: '已手动停止。',
+    doneWithDraft: '完成，邮件草稿见下方，确认后发送。',
+    doneNoDraft: '完成，本次没有生成邮件草稿。',
     errorApiKey: '请先设置 API Key',
-    errorFormat: '格式不对，应以',
     errorContent: '无法读取页面，请刷新后重试',
-    errorTooShort: '页面内容太少，可能不是导师主页',
-    loadingRead: '正在读取页面内容…',
-    loadingAnalyze: '正在用 AI 分析导师信息并起草邮件…',
     aiError: 'AI 调用失败：',
-    noEmailAlert: '未检测到邮箱地址，请手动填写收件人后发送。',
+    emptyPipeline: '导师库还是空的。在导师主页上跑一次任务，agent 会自动填进来。',
+    pipelineCount: (n) => `共 ${n} 位导师`,
+    status: { new: '待联系', drafted: '已起草', contacted: '已联系', replied: '已回复', meeting: '已约聊', offer: '有offer', declined: '已婉拒', archived: '归档' },
+    observation: (len) => `观察结果 · ${len} 字`,
+    noEmailAlert: '还没有收件人，请手动填写后再发送。'
   }
 };
 
 let currentLang = 'zh';
+const t = (key) => i18n[currentLang]?.[key] ?? i18n.zh[key] ?? key;
+const statusLabel = (status) => t('status')[status] || status;
 
-// Translation helper
-function t(key) {
-  return i18n[currentLang]?.[key] || i18n['zh'][key] || key;
-}
-
-// ─── DOM refs ───────────────────────────────────────────────────────────────
-const setupView      = document.getElementById('setup-view');
-const infoSection    = document.getElementById('info-section');
-const mainView       = document.getElementById('main-view');
-const resultView     = document.getElementById('result-view');
-const settingsView   = document.getElementById('settings-view');
-
-const apiKeyInput    = document.getElementById('api-key-input');
-const saveKeyBtn     = document.getElementById('save-key-btn');
-const setupStatus    = document.getElementById('setup-status');
-const modelSelector  = document.querySelectorAll('.model-btn[data-model]');
-const settingsModelSelector = document.querySelectorAll('#settings-model-selector .model-btn[data-model]');
-
-const myName         = document.getElementById('my-name');
-const mySchool       = document.getElementById('my-school');
-const myBackground   = document.getElementById('my-background');
-const saveInfoBtn    = document.getElementById('save-info-btn');
-const infoSavedTip   = document.getElementById('info-saved-tip');
-
-const analyzeBtn     = document.getElementById('analyze-btn');
-const statusArea     = document.getElementById('status-area');
-const openSettingsBtn= document.getElementById('open-settings-btn');
-
-const profNameEl     = document.getElementById('prof-name-el');
-const profEmailEl    = document.getElementById('prof-email-el');
-const profTagsEl     = document.getElementById('prof-tags-el');
-const profResearchEl = document.getElementById('prof-research-el');
-const emailSubject   = document.getElementById('email-subject');
-const emailBody      = document.getElementById('email-body');
-const backBtn        = document.getElementById('back-btn');
-const sendBtn        = document.getElementById('send-btn');
-const copyBtn        = document.getElementById('copy-btn');
-
-const settingsKeyInput     = document.getElementById('settings-key-input');
-const settingsSaveKeyBtn   = document.getElementById('settings-save-key-btn');
-const settingsName         = document.getElementById('settings-name');
-const settingsSchool       = document.getElementById('settings-school');
-const settingsBackground   = document.getElementById('settings-background');
-const settingsSaveInfoBtn  = document.getElementById('settings-save-info-btn');
-const settingsBackBtn      = document.getElementById('settings-back-btn');
-const settingsTip          = document.getElementById('settings-tip');
-
-// ─── State ──────────────────────────────────────────────────────────────────
-let currentEmail = '';
-let currentModel = 'anthropic';
-
-// Escape control characters for JSON string safety (used on prompt inputs)
-function escapeControlChars(str) {
-  return str
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')  // Remove control chars
-    .replace(/[\r\n]+/g, '\n')  // Normalize line endings
-    .replace(/[\u2018\u2019]/g, "'")  // Smart quotes to regular
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/\t/g, ' ')
-    .replace(/  +/g, ' ')  // Multiple spaces to single
-    .trim();
-}
-
-// Fix AI-returned JSON string that may contain literal newlines / control chars
-// inside string values — which is valid text but invalid raw JSON.
-function sanitizeJsonString(str) {
-  // Strategy: inside every JSON string value (between unescaped quotes),
-  // replace literal control characters with their proper escape sequences.
-  // This handles models like MiniMax that embed real \n/\r/\t in JSON values.
-  return str.replace(
-    /"((?:[^"\\]|\\.)*)"/g,
-    (match, inner) =>
-      '"' +
-      inner
-        .replace(/\r\n/g, '\\n')
-        .replace(/\r/g, '\\n')
-        .replace(/\n/g, '\\n')
-        .replace(/\t/g, '\\t')
-        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') +
-      '"'
-  );
-}
-
-// Model configurations
-const modelConfigs = {
-  anthropic: {
-    name: 'Anthropic',
-    apiKeyPrefix: 'sk-ant-',
-    apiUrl: 'https://api.anthropic.com/v1/messages',
-    model: 'claude-sonnet-4-20250514',
-    headers: {
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    buildRequest: (apiKey, prompt) => ({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1200,
-      messages: [{ role: 'user', content: prompt }]
-    }),
-    parseResponse: (data) => {
-      const text = data.content?.[0]?.text || '';
-      return text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-    }
-  },
-  minimax: {
-    name: 'Minimax',
-    apiKeyPrefix: '',  // 多种格式
-    apiUrl: 'https://api.minimax.chat/v1/text/chatcompletion_v2',
-    model: 'abab6.5s-chat',
-    headers: {},
-    buildRequest: (apiKey, prompt) => ({
-      model: 'abab6.5s-chat',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1200,
-      mask_Enabled: true
-    }),
-    parseResponse: (data) => {
-      const text = data.choices?.[0]?.message?.content || '';
-      return text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-    }
-  },
-  openai: {
-    name: 'OpenAI 兼容',
-    apiKeyPrefix: 'sk-',
-    apiUrl: 'https://api.openai.com/v1/chat/completions',
-    model: 'gpt-4o-mini',
-    headers: {},
-    buildRequest: (apiKey, prompt) => ({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1200
-    }),
-    parseResponse: (data) => {
-      const text = data.choices?.[0]?.message?.content || '';
-      return text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-    }
-  }
+// ─── DOM ────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const views = {
+  setup: $('setup-view'), info: $('info-section'), main: $('main-view'),
+  result: $('result-view'), pipeline: $('pipeline-view'), settings: $('settings-view')
 };
 
-// ─── Init ───────────────────────────────────────────────────────────────────
-const langSwitch = document.getElementById('lang-switch');
+const setupProviderSel = $('setup-provider-selector');
+const setupBaseUrl = $('setup-base-url');
+const setupModel = $('setup-model');
+const apiKeyInput = $('api-key-input');
+const saveKeyBtn = $('save-key-btn');
+const setupStatus = $('setup-status');
 
-async function init() {
-  // Load language preference
-  const data = await chrome.storage.local.get(['apiKey', 'myName', 'mySchool', 'myBackground', 'modelProvider', 'lang']);
-  currentLang = data.lang || 'zh';
-  langSwitch.checked = currentLang === 'en';
-  updateTranslations();
+const myName = $('my-name');
+const mySchool = $('my-school');
+const myBackground = $('my-background');
+const saveInfoBtn = $('save-info-btn');
+const infoSavedTip = $('info-saved-tip');
 
-  currentModel = data.modelProvider || 'anthropic';
-  updateModelButtons(currentModel);
+const taskInput = $('task-input');
+const taskChips = $('task-chips');
+const runBtn = $('run-btn');
+const stopBtn = $('stop-btn');
+const statusArea = $('status-area');
+const tracePanel = $('trace-panel');
+const traceTitle = $('trace-title');
+const traceBody = $('trace-body');
 
-  if (!data.apiKey) {
-    show(setupView);
-  } else {
-    myName.value       = data.myName       || '';
-    mySchool.value     = data.mySchool     || '';
-    myBackground.value = data.myBackground || '';
-    show(infoSection);
-    show(mainView);
-  }
+const profNameEl = $('prof-name-el');
+const profEmailEl = $('prof-email-el');
+const profTagsEl = $('prof-tags-el');
+const profResearchEl = $('prof-research-el');
+const emailTo = $('email-to');
+const emailSubject = $('email-subject');
+const emailBody = $('email-body');
+const backBtn = $('back-btn');
+const sendBtn = $('send-btn');
+const copyBtn = $('copy-btn');
+const markContactedBtn = $('mark-contacted-btn');
+
+const pipelineCountEl = $('pipeline-count');
+const pipelineList = $('pipeline-list');
+
+const settingsProviderSel = $('settings-provider-selector');
+const settingsBaseUrl = $('settings-base-url');
+const settingsModel = $('settings-model');
+const settingsKeyInput = $('settings-key-input');
+const settingsMaxSteps = $('settings-max-steps');
+const settingsName = $('settings-name');
+const settingsSchool = $('settings-school');
+const settingsBackground = $('settings-background');
+const settingsSaveBtn = $('settings-save-btn');
+const settingsBackBtn = $('settings-back-btn');
+const settingsTip = $('settings-tip');
+const headerSub = $('header-sub');
+const langSwitch = $('lang-switch');
+
+// ─── State ──────────────────────────────────────────────────────────────────
+const store = new Store();
+let settings = {};
+let running = false;
+let abortController = null;
+let currentDraft = null;      // { professorId, professorName, to }
+let lastAutoTask = '';        // 用来判断任务框里是不是还是默认文案
+let stepCount = 0;
+
+const TASK_KEYS = ['taskDefault', 'taskDig', 'taskFaculty'];
+
+// ─── 基础工具 ───────────────────────────────────────────────────────────────
+// 所有视图的显示/隐藏只走 .hidden 类，不再动内联 display（曾经因为 CSS 里写了
+// display:none、内联 style 清空后依然不显示，导致结果面板和导师库打不开）
+const show = (el) => el.classList.remove('hidden');
+const hide = (el) => el.classList.add('hidden');
+const showOnly = (view) => Object.values(views).forEach((el) => (el === view ? show(el) : hide(el)));
+
+function setStatus(type, msg) {
+  const icons = { loading: '<div class="spinner"></div>', error: '⚠', success: '✓' };
+  statusArea.innerHTML = `<div class="status-box status-${type}">${icons[type] || ''}<span>${escapeHtml(msg)}</span></div>`;
+}
+const clearStatus = () => (statusArea.innerHTML = '');
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Language switch handler
-langSwitch.addEventListener('change', async () => {
-  currentLang = langSwitch.checked ? 'en' : 'zh';
-  await chrome.storage.local.set({ lang: currentLang });
-  updateTranslations();
-});
+function compactArgs(args) {
+  const text = JSON.stringify(args ?? {});
+  return text.length > 160 ? `${text.slice(0, 160)}…` : text;
+}
 
-// Update all UI translations
-function updateTranslations() {
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const key = el.dataset.i18n;
-    if (i18n[currentLang][key]) {
-      el.textContent = i18n[currentLang][key];
+// ─── Trace 渲染 ─────────────────────────────────────────────────────────────
+function resetTrace() {
+  traceBody.innerHTML = '';
+  stepCount = 0;
+  traceTitle.textContent = t('traceTitle');
+}
+
+function appendTrace(html) {
+  const row = document.createElement('div');
+  row.className = 'trace-row';
+  row.innerHTML = html;
+  traceBody.appendChild(row);
+  traceBody.scrollIntoView?.({ block: 'nearest' });
+  row.scrollIntoView?.({ block: 'nearest' });
+}
+
+function handleEvent(event) {
+  switch (event.type) {
+    case 'thinking':
+      stepCount = event.step;
+      setStatus('loading', t('thinking')(event.step));
+      break;
+    case 'thought':
+      appendTrace(`<span class="trace-thought">💭 ${escapeHtml(event.content)}</span>`);
+      break;
+    case 'tool_start':
+      appendTrace(
+        `<span class="trace-tool">🔧 ${escapeHtml(event.name)}(${escapeHtml(compactArgs(event.args))})</span>`
+      );
+      break;
+    case 'tool_end': {
+      const len = event.result?.length || 0;
+      const preview = escapeHtml(event.result?.slice(0, 1200) || '');
+      const row = document.createElement('div');
+      row.className = 'trace-row trace-obs';
+      row.innerHTML = `<details><summary>${escapeHtml(t('observation')(len))}</summary><pre>${preview}</pre></details>`;
+      traceBody.appendChild(row);
+      row.scrollIntoView?.({ block: 'nearest' });
+      break;
     }
-  });
-  // Update placeholders
-  document.getElementById('my-name').placeholder = currentLang === 'zh' ? '张三' : 'Zhang San';
-  document.getElementById('my-school').placeholder = currentLang === 'zh' ? 'XX大学' : 'XX University';
-  document.getElementById('my-background').placeholder = currentLang === 'zh' ? '计算机科学 GPA 3.8/4.0，熟悉机器学习，参与过NLP项目…' : 'CS GPA 3.8/4.0, familiar with ML, participated in NLP projects...';
+    case 'final':
+      appendTrace(`<span class="trace-final">✓ ${escapeHtml(event.content || '')}</span>`);
+      break;
+    case 'limit':
+      appendTrace(`<span class="trace-error">⚠ ${escapeHtml(event.message)}</span>`);
+      break;
+    case 'error':
+      appendTrace(`<span class="trace-error">⚠ ${escapeHtml(event.message)}</span>`);
+      break;
+  }
 }
 
-function show(el)  { el.classList.remove('hidden'); el.style.display = ''; }
-function hide(el)  { el.classList.add('hidden'); }
-
-function updateModelButtons(model) {
-  document.querySelectorAll('.model-btn[data-model]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.model === model);
-  });
+// ─── 运行状态 ───────────────────────────────────────────────────────────────
+function setRunning(next) {
+  running = next;
+  runBtn.disabled = next;
+  runBtn.classList.toggle('hidden', next);
+  stopBtn.classList.toggle('hidden', !next);
+  taskInput.disabled = next;
 }
 
-// ─── Model selector ─────────────────────────────────────────────────────────
-modelSelector.forEach(btn => {
-  btn.addEventListener('click', () => {
-    currentModel = btn.dataset.model;
-    updateModelButtons(currentModel);
-  });
-});
+// ─── Agent 主流程 ───────────────────────────────────────────────────────────
+async function startRun(task) {
+  if (running) return;
+  const text = (task || taskInput.value || '').trim();
 
-// Setup: save API key
-saveKeyBtn.addEventListener('click', async () => {
-  const key = apiKeyInput.value.trim();
-  const config = modelConfigs[currentModel];
-
-  if (!key) {
-    setupStatus.innerHTML = '<div style="color:#b91c1c;font-size:11px;margin-top:4px">请填写 API Key</div>';
-    return;
-  }
-
-  if (config.apiKeyPrefix && !key.startsWith(config.apiKeyPrefix)) {
-    setupStatus.innerHTML = `<div style="color:#b91c1c;font-size:11px;margin-top:4px">格式不对，应以 ${config.apiKeyPrefix} 开头</div>`;
-    return;
-  }
-
-  await chrome.storage.local.set({ apiKey: key, modelProvider: currentModel });
-  setupStatus.innerHTML = '<div style="color:#2e7d52;font-size:11px;margin-top:4px">✓ 已保存，请填写个人信息</div>';
-  setTimeout(() => {
-    hide(setupView);
-    show(infoSection);
-    show(mainView);
-  }, 800);
-});
-
-// ─── Info: save personal info ───────────────────────────────────────────────
-saveInfoBtn.addEventListener('click', async () => {
-  await chrome.storage.local.set({
-    myName:       myName.value.trim(),
-    mySchool:     mySchool.value.trim(),
-    myBackground: myBackground.value.trim()
-  });
-  infoSavedTip.style.display = 'inline';
-  setTimeout(() => { infoSavedTip.style.display = 'none'; }, 2000);
-});
-
-// ─── Settings panel ─────────────────────────────────────────────────────────
-openSettingsBtn.addEventListener('click', async () => {
-  const data = await chrome.storage.local.get(['apiKey', 'myName', 'mySchool', 'myBackground', 'modelProvider']);
-  settingsKeyInput.value     = data.apiKey       ? '••••••••' : '';
-  settingsName.value         = data.myName       || '';
-  settingsSchool.value       = data.mySchool     || '';
-  settingsBackground.value   = data.myBackground || '';
-  currentModel = data.modelProvider || 'anthropic';
-  updateModelButtons(currentModel);
-
-  hide(infoSection);
-  hide(mainView);
-  show(settingsView);
-});
-
-settingsBackBtn.addEventListener('click', () => {
-  hide(settingsView);
-  show(infoSection);
-  show(mainView);
-});
-
-// Settings model selector
-settingsModelSelector.forEach(btn => {
-  btn.addEventListener('click', () => {
-    currentModel = btn.dataset.model;
-    updateModelButtons(currentModel);
-  });
-});
-
-settingsSaveKeyBtn.addEventListener('click', async () => {
-  const key = settingsKeyInput.value.trim();
-  const config = modelConfigs[currentModel];
-
-  if (key && !key.startsWith('••')) {
-    if (config.apiKeyPrefix && !key.startsWith(config.apiKeyPrefix)) {
-      settingsTip.textContent = `格式不对，应以 ${config.apiKeyPrefix} 开头`;
-      settingsTip.style.color = '#b91c1c';
-    } else {
-      await chrome.storage.local.set({ apiKey: key, modelProvider: currentModel });
-      settingsTip.textContent = '✓ API Key 已更新';
-      settingsTip.style.color = '#2e7d52';
-    }
-    settingsTip.style.display = 'block';
-    setTimeout(() => { settingsTip.style.display = 'none'; }, 2000);
-  }
-});
-
-settingsSaveInfoBtn.addEventListener('click', async () => {
-  await chrome.storage.local.set({
-    myName:       settingsName.value.trim(),
-    mySchool:     settingsSchool.value.trim(),
-    myBackground: settingsBackground.value.trim()
-  });
-  // Sync back to main info section
-  myName.value       = settingsName.value.trim();
-  mySchool.value     = settingsSchool.value.trim();
-  myBackground.value = settingsBackground.value.trim();
-  settingsTip.textContent = '✓ 个人信息已保存';
-  settingsTip.style.color = '#2e7d52';
-  settingsTip.style.display = 'block';
-  setTimeout(() => { settingsTip.style.display = 'none'; }, 2000);
-});
-
-// ─── Analyze button ─────────────────────────────────────────────────────────
-analyzeBtn.addEventListener('click', async () => {
-  const data = await chrome.storage.local.get(['apiKey', 'myName', 'mySchool', 'myBackground']);
-  if (!data.apiKey) {
+  settings = await getSettings();
+  if (!settings.apiKey) {
     setStatus('error', t('errorApiKey'));
     return;
   }
+  const config = resolveConfig(settings);
+  headerSub.textContent = describeProvider(config);
 
-  setStatus('loading', t('loadingRead'));
-  analyzeBtn.disabled = true;
+  await store.load();
+  currentDraft = null;
 
-  // Get page content via message to content script
-  let pageContent = '';
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const pageContext = tab?.url && !/^(chrome|edge|about|devtools):/i.test(tab.url)
+    ? (currentLang === 'en'
+        ? `Current tab the student is looking at: ${tab.title || ''} — ${tab.url}`
+        : `学生当前正在浏览的页面：${tab.title || ''} — ${tab.url}`)
+    : '';
+
+  const messages = [
+    {
+      role: 'system',
+      content: buildSystemPrompt({
+        lang: currentLang,
+        student: { name: settings.myName, school: settings.mySchool, background: settings.myBackground },
+        storeBrief: store.brief(),
+        pageContext
+      })
+    },
+    { role: 'user', content: text || t('taskDefault') }
+  ];
+
+  const tools = createTools({
+    store,
+    ui: {
+      onStoreChange: () => renderPipeline(),
+      onDraft: (draft) => renderDraft(draft)
+    }
+  });
+
+  resetTrace();
+  show(tracePanel);
+  clearStatus();
+  setRunning(true);
+  abortController = new AbortController();
+
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    console.log('Current tab:', tab);
-    const response = await chrome.tabs.sendMessage(tab.id, { action: 'getPageContent' });
-    console.log('Message response:', response);
-    pageContent = response?.content || '';
-  } catch (e) {
-    console.error('Page content error:', e);
-    setStatus('error', t('errorContent') + ': ' + e.message);
-    analyzeBtn.disabled = false;
-    return;
-  }
-
-  if (!pageContent || pageContent.length < 100) {
-    setStatus('error', t('errorTooShort'));
-    analyzeBtn.disabled = false;
-    return;
-  }
-
-  setStatus('loading', t('loadingAnalyze'));
-
-  try {
-    const result = await callAI(data.apiKey, pageContent, {
-      name:       data.myName       || (currentLang === 'zh' ? '（未填写姓名）' : '(Name not provided)'),
-      school:     data.mySchool     || (currentLang === 'zh' ? '（未填写院校）' : '(School not provided)'),
-      background: data.myBackground || (currentLang === 'zh' ? '（未填写背景）' : '(Background not provided)')
+    const result = await runAgent({
+      config,
+      tools,
+      messages,
+      maxSteps: Number(settings.maxSteps) || DEFAULT_MAX_STEPS,
+      onEvent: handleEvent,
+      signal: abortController.signal
     });
-    renderResult(result);
+
+    if (result.stopped) setStatus('error', t('stopped'));
+    else if (currentDraft) setStatus('success', t('doneWithDraft'));
+    else setStatus('success', t('doneNoDraft'));
   } catch (e) {
     setStatus('error', t('aiError') + e.message);
-    analyzeBtn.disabled = false;
+  } finally {
+    setRunning(false);
+    abortController = null;
+    renderPipeline();
+    if (currentDraft) showOnly(views.result);
   }
-});
-
-// ─── Content extractor (injected into page) ─────────────────────────────────
-function extractPageContent() {
-  const cloned = document.body.cloneNode(true);
-  ['script','style','nav','footer','header','iframe','noscript'].forEach(tag => {
-    cloned.querySelectorAll(tag).forEach(el => el.remove());
-  });
-  let text = (cloned.innerText || cloned.textContent || '').replace(/\s+/g, ' ').trim();
-  return text.substring(0, 8000);
 }
 
-// ─── AI API call ────────────────────────────────────────────────────────────
-async function callAI(apiKey, pageContent, student) {
-  const config = modelConfigs[currentModel];
+runBtn.addEventListener('click', () => startRun());
+stopBtn.addEventListener('click', () => abortController?.abort());
 
-  // Escape control characters to prevent JSON parse errors
-  const safePageContent = escapeControlChars(pageContent);
-  const safeName = escapeControlChars(student.name);
-  const safeSchool = escapeControlChars(student.school);
-  const safeBackground = escapeControlChars(student.background);
+// 任务预设
+function renderTaskChips() {
+  taskChips.innerHTML = '';
+  TASK_KEYS.forEach((key) => {
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.textContent = t(key).slice(0, 18) + '…';
+    chip.title = t(key);
+    chip.addEventListener('click', () => {
+      taskInput.value = t(key);
+      lastAutoTask = t(key);
+      taskInput.focus();
+    });
+    taskChips.appendChild(chip);
+  });
+}
 
-  const isChinese = currentLang === 'zh';
-  const langInstruction = isChinese
-    ? '请用简体中文回复。邮件内容应该亲切、真诚，200-350字左右。'
-    : 'Please reply in English. The email should be sincere and concise, 200-350 words.';
-
-  const prompt = `You are an assistant helping students contact professors for graduate school applications. ${langInstruction}
-
-Analyze the professor's homepage content below and complete two tasks:
-
-1. Extract professor information (name, email, research keywords, one-sentence research summary)
-2. Write a concise, sincere, personalized contact email for the student
-
-Student information:
-- Name: ${safeName}
-- School: ${safeSchool}
-- Background: ${safeBackground}
-
-Professor homepage content:
----
-${safePageContent}
----
-
-Return strictly in the following JSON format, no additional text:
-{
-  "prof_name": "Professor full name (or unknown if not found)",
-  "prof_email": "Email address (or empty string if not found)",
-  "research_tags": ["keyword1", "keyword2", "keyword3"],
-  "research_summary": "One or two sentences summarizing main research focus",
-  "email_subject": "Email subject",
-  "email_body": "Email body (sincere tone, specific to professor's research, end with contact info)"
-}`;
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`,
-    ...config.headers
+// ─── 邮件草稿 ───────────────────────────────────────────────────────────────
+function renderDraft({ to, subject, body, professorName }) {
+  const rec = store.find({ name: professorName }) || null;
+  currentDraft = {
+    professorId: rec?.id || null,
+    professorName: rec?.name || professorName || '',
+    to: to || rec?.email || ''
   };
 
-  const body = config.buildRequest(apiKey, prompt);
+  profNameEl.textContent = rec?.name || professorName || '—';
+  profEmailEl.textContent = to || rec?.email || '';
+  profResearchEl.textContent = rec?.summary || '';
+  profTagsEl.innerHTML = (rec?.tags || []).map((tag) => `<span class="research-tag">${escapeHtml(tag)}</span>`).join('');
 
-  console.log('Request body:', JSON.stringify(body).substring(0, 500));
-
-  const resp = await fetch(config.apiUrl, {
-    method: 'POST',
-    headers: headers,
-    body: JSON.stringify(body)
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    console.error('API Error Response:', errText);
-    let err;
-    try {
-      err = JSON.parse(errText);
-    } catch {
-      err = { error: { message: errText } };
-    }
-    const errorMsg = err?.error?.message || err?.message || `HTTP ${resp.status}`;
-    throw new Error(errorMsg);
-  }
-
-  const respText = await resp.text();
-  console.log('API Response:', respText.substring(0, 500));
-
-  let data;
-  try {
-    data = JSON.parse(respText);
-  } catch (e) {
-    throw new Error('响应 JSON 解析失败: ' + e.message + '\n响应内容: ' + respText.substring(0, 200));
-  }
-
-  const cleaned = config.parseResponse(data);
-  // Sanitize literal control characters inside JSON string values (MiniMax etc.)
-  const sanitized = sanitizeJsonString(cleaned);
-  try {
-    return JSON.parse(sanitized);
-  } catch (e) {
-    // Try to extract JSON block from response if it contains extra surrounding text
-    const jsonMatch = sanitized.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(sanitizeJsonString(jsonMatch[0]));
-    }
-    throw new Error('JSON 解析失败: ' + e.message);
-  }
+  emailTo.value = to || rec?.email || '';
+  emailSubject.value = subject || '';
+  emailBody.value = body || '';
 }
 
-// ─── Render result ───────────────────────────────────────────────────────────
-function renderResult(r) {
-  profNameEl.textContent     = r.prof_name     || '未知';
-  profEmailEl.textContent    = r.prof_email    || '未检测到邮箱';
-  profResearchEl.textContent = r.research_summary || '';
-  currentEmail               = r.prof_email    || '';
-
-  profTagsEl.innerHTML = (r.research_tags || [])
-    .map(t => `<span class="research-tag">${t}</span>`)
-    .join('');
-
-  emailSubject.value = r.email_subject || '';
-  emailBody.value    = r.email_body    || '';
-
-  hide(mainView);
-  hide(infoSection);
-  resultView.style.display = 'block';
-  clearStatus();
-  analyzeBtn.disabled = false;
-}
-
-// ─── Back button ─────────────────────────────────────────────────────────────
-backBtn.addEventListener('click', () => {
-  resultView.style.display = 'none';
-  show(infoSection);
-  show(mainView);
-  clearStatus();
-});
-
-// ─── Send button: open mailto ────────────────────────────────────────────────
 sendBtn.addEventListener('click', () => {
-  const to      = currentEmail;
+  const to = emailTo.value.trim();
   const subject = encodeURIComponent(emailSubject.value.trim());
-  const body    = encodeURIComponent(emailBody.value.trim());
-
+  const body = encodeURIComponent(emailBody.value.trim());
   if (!to) {
-    alert('未检测到邮箱地址，请手动填写收件人后发送。');
-    const mailto = `mailto:?subject=${subject}&body=${body}`;
-    chrome.tabs.create({ url: mailto });
+    alert(t('noEmailAlert'));
+    chrome.tabs.create({ url: `mailto:?subject=${subject}&body=${body}` });
     return;
   }
-
-  const mailto = `mailto:${to}?subject=${subject}&body=${body}`;
-  chrome.tabs.create({ url: mailto });
+  chrome.tabs.create({ url: `mailto:${to}?subject=${subject}&body=${body}` });
 });
 
-// ─── Copy button: copy email to clipboard ───────────────────────────────────
 copyBtn.addEventListener('click', async () => {
-  const subject = emailSubject.value.trim();
-  const body = emailBody.value.trim();
-  const emailText = `Subject: ${subject}\n\n${body}`;
-
+  const text = `Subject: ${emailSubject.value.trim()}\n\n${emailBody.value.trim()}`;
   try {
-    await navigator.clipboard.writeText(emailText);
+    await navigator.clipboard.writeText(text);
     copyBtn.textContent = t('copied');
-    copyBtn.style.background = 'var(--green)';
-    setTimeout(() => {
-      copyBtn.textContent = t('copyToClipboard');
-      copyBtn.style.background = '';
-    }, 2000);
-  } catch (e) {
-    console.error('Copy failed:', e);
+    setTimeout(() => (copyBtn.textContent = t('copyToClipboard')), 1800);
+  } catch {
     alert('复制失败，请手动复制');
   }
 });
 
-// ─── Status helpers ──────────────────────────────────────────────────────────
-function setStatus(type, msg) {
-  const icons = { loading: '<div class="spinner"></div>', error: '⚠', success: '✓' };
-  statusArea.innerHTML = `
-    <div class="status-box status-${type}">
-      ${icons[type]}
-      <span>${msg}</span>
-    </div>`;
-}
-function clearStatus() { statusArea.innerHTML = ''; }
+markContactedBtn.addEventListener('click', async () => {
+  if (!currentDraft?.professorId) {
+    alert('这条草稿没有对应的导师库记录');
+    return;
+  }
+  store.upsert({ id: currentDraft.professorId, status: 'contacted', note: '已发送联系邮件' });
+  await store.persist();
+  renderPipeline();
+  markContactedBtn.textContent = t('markedContacted');
+  setTimeout(() => (markContactedBtn.textContent = t('markContacted')), 1800);
+});
 
-// ─── Boot ────────────────────────────────────────────────────────────────────
+// ─── 导师库 ─────────────────────────────────────────────────────────────────
+function renderPipeline() {
+  const list = store.list();
+  pipelineCountEl.textContent = t('pipelineCount')(list.length);
+
+  if (!list.length) {
+    pipelineList.innerHTML = `<div class="empty-hint">${escapeHtml(t('emptyPipeline'))}</div>`;
+    return;
+  }
+
+  pipelineList.innerHTML = list
+    .map((p) => {
+      const meta = [p.school, p.email].filter(Boolean).join(' · ') || p.homepageUrl || '';
+      const options = STATUSES.map(
+        (s) => `<option value="${s}"${s === p.status ? ' selected' : ''}>${escapeHtml(statusLabel(s))}</option>`
+      ).join('');
+      return `<div class="prof-row" data-id="${p.id}">
+        <div class="prof-row-main">
+          <div class="prof-row-name" title="${escapeHtml(p.summary || '')}">${escapeHtml(p.name || '未命名')}</div>
+          <div class="prof-row-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</div>
+        </div>
+        <select class="status-select" data-act="status">${options}</select>
+        <button class="icon-btn" data-act="open" title="打开主页">↗</button>
+        <button class="icon-btn" data-act="del" title="删除">✕</button>
+      </div>`;
+    })
+    .join('');
+}
+
+pipelineList.addEventListener('click', async (event) => {
+  const row = event.target.closest('.prof-row');
+  if (!row) return;
+  const id = row.dataset.id;
+  const act = event.target.dataset?.act;
+
+  if (act === 'open') {
+    const rec = store.professors[id];
+    if (rec?.homepageUrl) chrome.tabs.create({ url: rec.homepageUrl, active: true });
+    else alert('这条记录没有保存主页链接');
+    return;
+  }
+  if (act === 'del') {
+    store.remove(id);
+    await store.persist();
+    renderPipeline();
+  }
+});
+
+pipelineList.addEventListener('change', async (event) => {
+  if (event.target.dataset?.act !== 'status') return;
+  const row = event.target.closest('.prof-row');
+  store.upsert({ id: row.dataset.id, status: event.target.value });
+  await store.persist();
+});
+
+$('open-pipeline-btn').addEventListener('click', async () => {
+  await store.load();
+  renderPipeline();
+  showOnly(views.pipeline);
+});
+$('pipeline-back-btn').addEventListener('click', () => showOnly(views.main));
+
+$('export-btn').addEventListener('click', () => {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    professors: store.list(),
+    notes: store.notes
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `professors-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+});
+
+backBtn.addEventListener('click', () => showOnly(views.main));
+
+// ─── Provider 选择 ──────────────────────────────────────────────────────────
+function renderProviderChips() {
+  [setupProviderSel, settingsProviderSel].forEach((container) => {
+    container.innerHTML = '';
+    Object.entries(PRESETS).forEach(([key, preset]) => {
+      const btn = document.createElement('button');
+      btn.className = 'model-btn';
+      btn.dataset.provider = key;
+      btn.textContent = preset.label;
+      if (preset.note) btn.title = preset.note;
+      btn.addEventListener('click', () => {
+        settings.provider = key;
+        setupBaseUrl.value = settingsBaseUrl.value = preset.baseUrl;
+        setupModel.value = settingsModel.value = preset.model;
+        updateActiveProvider();
+      });
+      container.appendChild(btn);
+    });
+  });
+}
+
+function updateActiveProvider() {
+  document.querySelectorAll('.model-btn[data-provider]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.provider === settings.provider);
+  });
+}
+
+// ─── 初始化 ─────────────────────────────────────────────────────────────────
+async function init() {
+  const stored = await getSettings();
+
+  // 老版本（1.0）用的是 modelProvider，且没有 baseUrl/model 字段，这里做一次迁移
+  if (!stored.provider && stored.modelProvider) {
+    const preset = presetOf(stored.modelProvider);
+    stored.provider = stored.modelProvider;
+    stored.baseUrl = preset.baseUrl;
+    stored.model = preset.model;
+  }
+
+  currentLang = stored.lang || 'zh';
+  settings = {
+    provider: stored.provider || 'deepseek',
+    baseUrl: stored.baseUrl || '',
+    model: stored.model || '',
+    maxSteps: stored.maxSteps || DEFAULT_MAX_STEPS
+  };
+
+  langSwitch.checked = currentLang === 'en';
+  renderProviderChips();
+  updateTranslations();
+  updateActiveProvider();
+
+  const preset = presetOf(settings.provider);
+  setupBaseUrl.value = settingsBaseUrl.value = settings.baseUrl || preset.baseUrl;
+  setupModel.value = settingsModel.value = settings.model || preset.model;
+  settingsMaxSteps.value = settings.maxSteps;
+  headerSub.textContent = describeProvider(resolveConfig(settings));
+
+  if (!stored.apiKey) {
+    showOnly(views.setup);
+  } else {
+    myName.value = settingsName.value = stored.myName || '';
+    mySchool.value = settingsSchool.value = stored.mySchool || '';
+    myBackground.value = settingsBackground.value = stored.myBackground || '';
+    show(views.info);
+    show(views.main);
+  }
+
+  await store.load();
+  renderPipeline();
+}
+
+function updateTranslations() {
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const value = t(el.dataset.i18n);
+    if (typeof value === 'string') el.textContent = value;
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    const value = t(el.dataset.i18nPlaceholder);
+    if (typeof value === 'string') el.placeholder = value;
+  });
+
+  traceTitle.textContent = t('traceTitle');
+  renderTaskChips();
+
+  const defaultTask = t('taskDefault');
+  if (!taskInput.value.trim() || taskInput.value === lastAutoTask) {
+    taskInput.value = defaultTask;
+    lastAutoTask = defaultTask;
+  }
+
+  myName.placeholder = currentLang === 'zh' ? '张三' : 'Zhang San';
+  mySchool.placeholder = currentLang === 'zh' ? 'XX大学' : 'XX University';
+  myBackground.placeholder =
+    currentLang === 'zh'
+      ? '计算机科学 GPA 3.8/4.0，熟悉机器学习，参与过NLP项目…'
+      : 'CS GPA 3.8/4.0, familiar with ML, participated in NLP projects...';
+
+  runBtn.textContent = t('runBtn');
+  stopBtn.textContent = t('stopBtn');
+  copyBtn.textContent = t('copyToClipboard');
+  markContactedBtn.textContent = t('markContacted');
+  renderPipeline();
+}
+
+langSwitch.addEventListener('change', async () => {
+  currentLang = langSwitch.checked ? 'en' : 'zh';
+  await setSettings({ lang: currentLang });
+  updateTranslations();
+});
+
+// ─── 事件绑定 ───────────────────────────────────────────────────────────────
+saveKeyBtn.addEventListener('click', async () => {
+  const key = apiKeyInput.value.trim();
+  const preset = presetOf(settings.provider);
+  if (!key) return tipSetup('请填写 API Key', true);
+  if (preset.apiKeyPrefix && !key.startsWith(preset.apiKeyPrefix)) {
+    return tipSetup(`格式不对，应以 ${preset.apiKeyPrefix} 开头`, true);
+  }
+
+  settings.baseUrl = setupBaseUrl.value.trim();
+  settings.model = setupModel.value.trim();
+  await setSettings({
+    provider: settings.provider,
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    apiKey: key
+  });
+  tipSetup('✓ 已保存', false);
+
+  const stored = await getSettings();
+  myName.value = settingsName.value = stored.myName || '';
+  mySchool.value = settingsSchool.value = stored.mySchool || '';
+  myBackground.value = settingsBackground.value = stored.myBackground || '';
+  show(views.info);
+  show(views.main);
+  hide(views.setup);
+});
+
+function tipSetup(message, isError) {
+  setupStatus.innerHTML = `<div style="color:${isError ? '#b91c1c' : 'var(--green)'};font-size:11px;margin-top:4px">${escapeHtml(message)}</div>`;
+}
+
+saveInfoBtn.addEventListener('click', async () => {
+  await setSettings({
+    myName: myName.value.trim(),
+    mySchool: mySchool.value.trim(),
+    myBackground: myBackground.value.trim()
+  });
+  settingsName.value = myName.value;
+  settingsSchool.value = mySchool.value;
+  settingsBackground.value = myBackground.value;
+  infoSavedTip.style.display = 'inline';
+  setTimeout(() => (infoSavedTip.style.display = 'none'), 2000);
+});
+
+$('open-settings-btn').addEventListener('click', async () => {
+  const stored = await getSettings();
+  settingsKeyInput.value = stored.apiKey ? '••••••••' : '';
+  settingsName.value = stored.myName || '';
+  settingsSchool.value = stored.mySchool || '';
+  settingsBackground.value = stored.myBackground || '';
+  settingsMaxSteps.value = stored.maxSteps || DEFAULT_MAX_STEPS;
+  updateActiveProvider();
+  showOnly(views.settings);
+});
+
+settingsBackBtn.addEventListener('click', () => {
+  showOnly(views.main);
+  if (!myName.value.trim() && settingsName.value.trim()) {
+    myName.value = settingsName.value;
+    mySchool.value = settingsSchool.value;
+    myBackground.value = settingsBackground.value;
+  }
+});
+
+settingsSaveBtn.addEventListener('click', async () => {
+  const patch = {
+    provider: settings.provider,
+    baseUrl: settingsBaseUrl.value.trim(),
+    model: settingsModel.value.trim(),
+    maxSteps: Number(settingsMaxSteps.value) || DEFAULT_MAX_STEPS,
+    myName: settingsName.value.trim(),
+    mySchool: settingsSchool.value.trim(),
+    myBackground: settingsBackground.value.trim()
+  };
+
+  const key = settingsKeyInput.value.trim();
+  if (key && !key.startsWith('••')) {
+    const preset = presetOf(settings.provider);
+    if (preset.apiKeyPrefix && !key.startsWith(preset.apiKeyPrefix)) {
+      settingsTip.textContent = `格式不对，应以 ${preset.apiKeyPrefix} 开头`;
+      settingsTip.style.color = '#b91c1c';
+      settingsTip.style.display = 'block';
+      setTimeout(() => (settingsTip.style.display = 'none'), 2000);
+      return;
+    }
+    patch.apiKey = key;
+  }
+
+  await setSettings(patch);
+  settings = { ...settings, ...patch };
+  setupBaseUrl.value = settings.baseUrl;
+  setupModel.value = settings.model;
+  headerSub.textContent = describeProvider(resolveConfig(settings));
+
+  myName.value = patch.myName;
+  mySchool.value = patch.mySchool;
+  myBackground.value = patch.myBackground;
+
+  settingsTip.textContent = '✓ 已保存';
+  settingsTip.style.color = 'var(--green)';
+  settingsTip.style.display = 'block';
+  setTimeout(() => (settingsTip.style.display = 'none'), 2000);
+});
+
+// ─── Boot ───────────────────────────────────────────────────────────────────
 init();

@@ -1,54 +1,110 @@
-# mail2professor邮件助手 · ai驱动的一键联系导师浏览器插件
+# mail2professor · agent 式联系导师插件
 
-<div align="center">
-  <img src="./icons/icon128.png" style="zoom:67%;" />
-</div>
----
-一个帮助你在保研联系导师时自动分析主页、生成个性化邮件的 Chrome/Edge 插件。
+一个 Chrome/Edge 扩展：在导师主页上点一下，agent 会自己读页面、必要时搜网页、把导师存进导师库、并起草一封你确认后就能发的联系邮件。
 
-## 功能
+和 1.0 的区别：1.0 是「把整页文本塞给模型，让模型返回一段 JSON」的一次性调用；2.0 是**带工具调用的 agent 循环**——模型自己决定读哪个页面、要不要搜索、什么时候入库、什么时候定稿，每一步都显示在侧边栏的 trace 里。
 
-- 📄 自动读取当前页面文本，提取导师姓名、邮箱、研究方向
-- 🤖 调用 Claude AI 生成量身定制的联系邮件
-- 📨 一键触发 `mailto:` 打开本地邮件客户端（Outlook/Mail/Thunderbird 均支持）
-- 💾 保存你的个人信息（姓名、院校、背景），下次无需重填
+## 为什么 agent 循环放在 JS 里（而不是 Python）
 
-## 安装方法
+这是这个项目最容易被问到的架构问题，结论和理由都记在这里：
 
-### Chrome / Edge
+- **Chrome MV3 扩展里跑不了 Python。** 没有 Python 运行时；Pyodide（WASM）也走不通——MV3 的 CSP 禁止扩展页面使用 `unsafe-eval` 和远程代码，而 Pyodide 依赖它。所以「用 Python 实现这个插件」在技术上等价于「另外起一个本地 Python 进程，插件退化成它的客户端」。
+- **agent 循环本身不是难点，两种语言都是 30 行。** 见 `ReAct.py`（手写）和 `lib/agent.js`（本仓库）：思考 → 调工具 → 观察 → 再思考，逻辑形状完全一样。
+- **真正决定语言的是「工具住在哪里」。** 这个 agent 的核心工具全是浏览器独有的能力：读当前标签页、后台开标签页读 JS 渲染的页面（Google Scholar、课题组主页）、跟随链接、复制邮件、`mailto:` 唤起客户端。这些只有扩展能做。放 Python 里反而要给 Python 装浏览器驱动，多一层不确定性。
+- **另一个现实约束是分发。** 目标是发给同学用，零安装是它的全部价值；多一个「先装 Python、再开个服务」的步骤，愿意用的人会少一个数量级。
 
-1. 打开扩展管理页面：
-   - Chrome：地址栏输入 `chrome://extensions/`
-   - Edge：地址栏输入 `edge://extensions/`
-2. 开启右上角 **开发者模式**
-3. 点击 **加载已解压的扩展程序**
-4. 下载/clone本项目并解压
-4. 选择本文件夹（`mail2professor`）
+**什么时候该换成 Python**：当它从「一个插件」进化成「你的个人 agent 平台」，需要 arXiv/SMTP 收发信、定时任务、向量记忆、多 agent 协作、Langfuse 观测这些东西的时候。那时候合理的形态是 **Python 当大脑 + 这个扩展当浏览器的手脚**：Python 侧跑 LangGraph（或你 `ReAct_langchain.py` 里的 `create_agent`），扩展通过 WebSocket 暴露 `read_current_page` / `visit_page` 这类底层能力给它调。
 
-## 使用步骤
+代码已经为这条路留好了口子——`runAgent()` 的 `chatFn` 是注入的：
 
-1. 打开目标导师的个人主页
-2. 点击浏览器右上角的插件图标
-3. 首次使用：输入你的API Key(Claude GPT MiniMax)
-4. 填写你的姓名、院校、背景简介（只需填一次）
-5. 点击「分析当前页面并生成邮件」
-6. 稍等几秒，AI 会提取导师信息并生成邮件草稿
-7. 确认/修改邮件内容后，点击「打开邮件客户端」即可发送
+```js
+// lib/agent.js
+export async function runAgent({ config, tools, messages, onEvent, signal, chatFn = defaultChat })
 
-## 注意事项
+// 现在：直连厂商 API
+// 以后：换成走本地 Python 后端的实现，循环、工具、UI 一行都不用改
+const chatFn = async ({ messages, tools, signal }) =>
+  (await fetch('http://127.0.0.1:8765/agent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, tools })
+  })).json();
+```
 
-- API Key 仅存储在本地浏览器（`chrome.storage.local`），不会上传任何服务器
-- 页面内容通过 Anthropic API 发送用于分析，请勿在敏感网络环境下使用
-- 如页面无法被读取（如 PDF 简历），可手动复制内容
+## 安装
+
+1. Chrome/Edge 打开 `chrome://extensions/`（Edge 是 `edge://extensions/`）
+2. 打开右上角 **开发者模式**
+3. 点 **加载已解压的扩展程序**，选择本文件夹
+4. 点扩展图标打开侧边栏（`background.js` 里设了 `openPanelOnActionClick`）
+
+## 使用
+
+1. 首次：选模型商（DeepSeek / 智谱 / 通义 / Kimi / OpenAI / MiniMax / Anthropic），填 API Key；OpenAI 兼容的厂商可以直接改 BASE URL 和模型名
+2. 填一次自己的姓名、院校、背景（agent 写邮件时会用）
+3. 打开某位导师的主页，在侧边栏里选一个任务或自己写，点「▶ 开始」
+
+侧边栏有三个预设任务，也可以自己写：
+
+| 预设 | agent 会做的事 |
+| --- | --- |
+| 分析并写邮件 | 读当前页 → 存导师库 → 起草邮件 |
+| 深挖研究方向 | 读页面 → 搜近期论文和课题组主页 → 找出可切入的点 → 重写邮件 |
+| 整理本页导师 | 在师资列表页上逐位入库（姓名 + 主页链接） |
+
+跑的过程中 trace 会实时显示「💭 思考 / 🔧 调用了什么工具 / 观察结果」，可以展开看模型实际读到了什么——这是排查「它为什么这么写」最直接的手段。
+
+## Agent 的工具集（`lib/tools.js`）
+
+| 工具 | 作用 |
+| --- | --- |
+| `read_current_page` | 读学生当前浏览的标签页：标题、正文、页面上的邮箱、链接；并判断这是导师页还是师资列表页 |
+| `visit_page` | 后台标签页打开任意网址并读取（能处理 JS 渲染的页面，读完自动关掉） |
+| `search_web` | 搜索网页（Bing RSS 为主，DuckDuckGo / Bing HTML 兜底，无需额外 key） |
+| `save_professor` | 存入导师库（按姓名/邮箱去重合并） |
+| `list_professors` | 列出导师库，避免重复劳动、确认谁还没联系 |
+| `update_professor_status` | 更新跟进状态或追加备注 |
+| `save_email_draft` | 把定稿邮件送进确认面板（收件人 / 主题 / 正文） |
+| `open_url` | 在学生浏览器里打开某个页面给他看 |
+
+导师库（侧边栏「📚 导师库」）按 `new → drafted → contacted → replied → meeting → offer / declined` 跟踪进度，可以导出 JSON。
 
 ## 文件结构
 
 ```
 professor-mail-extension/
-├── manifest.json    # 插件配置
-├── popup.html       # 弹窗界面
-├── popup.js         # 主逻辑
-├── content.js       # 页面内容提取（备用）
-├── icons/           # 图标
-└── README.md
+├── manifest.json        MV3 配置（host_permissions 用于跨域读取页面）
+├── background.js        只做一件事：点图标打开侧边栏
+├── content.js           注入页面，结构化提取正文 / 邮箱 / 链接
+├── sidepanel.html       界面
+├── sidepanel.js         UI + 编排（只负责界面和状态）
+├── lib/
+│   ├── providers.js     各家 API → 统一「能调工具的对话」接口（含 Anthropic 协议翻译）
+│   ├── agent.js         ReAct 循环 + 系统提示词 + chatFn 注入点
+│   ├── tools.js         agent 的工具集
+│   └── store.js         导师库 + 设置（chrome.storage.local）
+├── tests/smoke.test.mjs 单元测试：循环、消息翻译、参数容错、邮箱去混淆
+└── tools/e2e-verify.mjs 端到端自检：真 Chrome 加载扩展 + 本地 mock 模型跑完整任务
 ```
+
+## 开发自检
+
+```bash
+# 单元测试（18 项：agent 循环 / Anthropic 消息合并 / 工具参数容错 / 邮箱去混淆）
+node --test tests/smoke.test.mjs
+
+# 端到端（31 项）：起本地 mock 模型和假导师主页，用真 Chrome 加载扩展跑完一次任务
+node tools/e2e-verify.mjs
+```
+
+端到端脚本不碰任何外部 API，也不要你的 key：它自己起一个假的 OpenAI 兼容服务，按脚本返回「先读页面 → 入库 → 写草稿 → 收尾」，并断言 agent 每一步的工具结果（例如页面上 `zhangwei (at) cs (dot) example (dot) edu` 必须被还原成 `zhangwei@cs.example.edu` 再传给模型）。跑完会把侧边栏截图写到 `tools/last-run-*.png`。
+
+> 注：Chrome 137+ 已禁用 `--load-extension`（防侧载），所以脚本改走 CDP 的 `Extensions.loadUnpacked` 来加载未打包扩展。
+
+## 已知限制
+
+- **PDF 主页读不了**：Chrome 的 PDF 阅读器里注入不了 content script，工具会明确回报「这是 PDF」，由 agent 提醒你手动处理。
+- **需要登录的页面读不到内容**：`fetch`/后台标签页拿到的是未登录视图，这是浏览器的边界，不是 bug。
+- **搜索依赖公开入口**：Bing RSS / DuckDuckGo 的 HTML 端点哪天改结构就会失效，脚本里有多级兜底，真挂了加一个 Tavily/Serper 的 key 即可（`search_web` 是唯一需要改的地方）。
+- **API Key 存在 `chrome.storage.local`**，只在本机；页面内容会发给你选择的模型厂商。
+- **侧边栏关掉会中断运行中的任务**：agent 循环跑在侧边栏页面里，关掉面板等于关掉进程。要长时间无人值守的任务（批量几十位导师），就该上前面说的 Python 后端形态了。
