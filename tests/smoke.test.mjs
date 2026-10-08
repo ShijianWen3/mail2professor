@@ -12,8 +12,10 @@ import {
   toAnthropicMessages,
   toOpenAIMessages
 } from '../lib/providers.js';
-import { runAgent, packToolResult } from '../lib/agent.js';
+import { runAgent, packToolResult, buildSystemPrompt, profileBlock } from '../lib/agent.js';
 import { extractEmails, deobfuscate, looksLikeFacultyList, normalizeUrl } from '../lib/tools.js';
+import { migrate, profileCompleteness, PROFILE_FIELDS, stableStringify } from '../lib/store.js';
+import { providerSettings, currentApiKey, resolveConfig } from '../lib/providers.js';
 
 const config = {
   provider: 'deepseek',
@@ -287,4 +289,179 @@ test('looksLikeFacultyList：识别师资列表页', () => {
 test('normalizeUrl：相对链接补全、去掉锚点', () => {
   assert.equal(normalizeUrl('/~zhang#pub', 'https://cs.example.edu/index.html'), 'https://cs.example.edu/~zhang');
   assert.equal(normalizeUrl('', 'https://cs.example.edu'), '');
+});
+
+// ─── 存储结构：迁移与资料完整度 ─────────────────────────────────────────────
+
+test('migrate：旧版扁平字段迁移到新结构（落到当时那个厂商名下）', () => {
+  const state = migrate({
+    apiKey: 'sk-old',
+    modelProvider: 'minimax',
+    myName: '李明',
+    mySchool: '测试大学',
+    myBackground: 'GPA 3.9，做过 NLP 项目',
+    lang: 'en'
+  });
+  assert.equal(state.llm.provider, 'minimax');
+  assert.deepEqual(state.llm.perProvider, { minimax: { apiKey: 'sk-old' } });
+  assert.equal(state.profile.name, '李明');
+  assert.equal(state.profile.school, '测试大学');
+  assert.equal(state.profile.research, 'GPA 3.9，做过 NLP 项目');
+  assert.equal(state.lang, 'en');
+});
+
+test('migrate：2.1 的单 key 结构迁移到按厂商存储', () => {
+  const state = migrate({
+    llm: { provider: 'glm', baseUrl: 'https://proxy.local/v4', model: 'glm-4-plus', apiKey: 'sk-glm', maxSteps: 20 }
+  });
+  assert.equal(state.llm.provider, 'glm');
+  assert.equal(state.llm.maxSteps, 20);
+  assert.deepEqual(state.llm.perProvider.glm, {
+    apiKey: 'sk-glm',
+    baseUrl: 'https://proxy.local/v4',
+    model: 'glm-4-plus'
+  });
+  assert.equal(state.llm.apiKey, undefined, '旧的单 key 字段不该再留着');
+});
+
+test('migrate：新结构已存在时旧 key 不得覆盖新值', () => {
+  const state = migrate({
+    llm: {
+      provider: 'glm',
+      maxSteps: 12,
+      perProvider: { glm: { apiKey: 'sk-new' }, openai: { apiKey: 'sk-openai' } }
+    },
+    profile: { name: '新名字' },
+    provider: 'openai',
+    apiKey: 'sk-stale',
+    myName: '旧名字'
+  });
+  assert.equal(state.llm.provider, 'glm');
+  assert.equal(state.llm.perProvider.glm.apiKey, 'sk-new');
+  assert.equal(state.llm.perProvider.openai.apiKey, 'sk-openai');
+  assert.equal(state.profile.name, '新名字', '已有新 profile 结构时，旧的扁平 myName 不该生效');
+});
+
+test('migrate：旧 flat 数据里 profile 尚未迁移时仍然生效', () => {
+  // 2.0 用户升级上来的典型状态：llm 已迁移、profile 还没有
+  const state = migrate({ llm: { provider: 'deepseek', perProvider: {} }, myName: '李明', myBackground: '做过 NLP' });
+  assert.equal(state.profile.name, '李明');
+  assert.equal(state.profile.research, '做过 NLP');
+});
+
+test('providerSettings：每个厂商各用自己那套 key / baseUrl / model', () => {
+  const llm = {
+    provider: 'deepseek',
+    maxSteps: 12,
+    perProvider: {
+      deepseek: { apiKey: 'sk-deepseek' },
+      openai: { apiKey: 'sk-openai', baseUrl: 'http://127.0.0.1:8000/v1', model: 'local-model' }
+    }
+  };
+
+  const deepseek = providerSettings(llm, 'deepseek');
+  assert.equal(deepseek.apiKey, 'sk-deepseek');
+  assert.equal(deepseek.baseUrl, 'https://api.deepseek.com/v1'); // 没自定义 → 用预设默认
+  assert.equal(deepseek.model, 'deepseek-chat');
+
+  const openai = providerSettings(llm, 'openai');
+  assert.equal(openai.apiKey, 'sk-openai');
+  assert.equal(openai.baseUrl, 'http://127.0.0.1:8000/v1');      // 自己配过的保留
+  assert.equal(openai.model, 'local-model');
+
+  // 从没配过的厂商：key 为空、其余用预设默认
+  const glm = providerSettings(llm, 'glm');
+  assert.equal(glm.apiKey, '');
+  assert.equal(glm.baseUrl, 'https://open.bigmodel.cn/api/paas/v4');
+  assert.equal(glm.model, 'glm-4-flash');
+
+  assert.equal(currentApiKey(llm), 'sk-deepseek');
+  assert.equal(resolveConfig(llm).apiKey, 'sk-deepseek');
+});
+
+test('providerSettings：切厂商不会读到别人的 key', () => {
+  const llm = {
+    provider: 'openai',
+    perProvider: { deepseek: { apiKey: 'sk-d' }, openai: { apiKey: 'sk-o' } }
+  };
+  assert.equal(currentApiKey(llm), 'sk-o');
+  assert.equal(currentApiKey({ ...llm, provider: 'deepseek' }), 'sk-d');
+  assert.equal(currentApiKey({ ...llm, provider: 'kimi' }), '');
+  assert.equal(currentApiKey({}), '', '空数据也不能炸');
+});
+
+test('migrate：空数据给完整默认结构，导师库与笔记保留', () => {
+  const state = migrate({});
+  assert.equal(state.llm.provider, 'deepseek');
+  assert.equal(state.llm.maxSteps, 12);
+  assert.deepEqual(state.llm.perProvider, {});
+  assert.equal(state.lang, 'zh');
+  for (const field of PROFILE_FIELDS) assert.equal(state.profile[field.key], '');
+
+  const withData = migrate({ professors: { p1: { id: 'p1', name: '张伟' } }, notes: [{ ts: 1, text: 'x' }] });
+  assert.equal(withData.professors.p1.name, '张伟');
+  assert.equal(withData.notes.length, 1);
+});
+
+test('migrate：脏数据不会炸（professors 不是对象 / notes 不是数组）', () => {
+  const state = migrate({ professors: 'oops', notes: 'oops' });
+  assert.deepEqual(state.professors, {});
+  assert.deepEqual(state.notes, []);
+});
+
+test('profileCompleteness：统计已填项与缺失的核心项', () => {
+  const result = profileCompleteness({ name: '李明', school: '测试大学', skills: 'PyTorch' });
+  assert.equal(result.total, PROFILE_FIELDS.length);
+  assert.equal(result.filled, 3);
+  assert.deepEqual(result.missingCore.sort(), ['gpaRank', 'major']);
+});
+
+test('profileBlock：只输出填过的字段，缺失项明确列出', () => {
+  const block = profileBlock({ name: '李明', awards: 'ICPC 区域赛银奖' }, true);
+  assert.match(block, /姓名：李明/);
+  assert.match(block, /竞赛奖项：ICPC 区域赛银奖/);
+  assert.ok(!block.includes('- 联系电话：'), '没填的字段不能出现在画像里');
+  assert.match(block, /学生没填：/);
+  assert.match(block, /联系电话/); // 但要作为"缺失项"提醒
+});
+
+test('profileBlock：资料全空时明确要求不要编造', () => {
+  assert.match(profileBlock({}, true), /不要编造/);
+  assert.match(profileBlock({}, false), /do not invent/i);
+});
+
+test('buildSystemPrompt：竞赛奖项/科研技能进入提示词，且保留不得编造的铁律', () => {
+  const prompt = buildSystemPrompt({
+    lang: 'zh',
+    profile: { name: '李明', skills: 'PyTorch、LaTeX', awards: 'ICPC 银奖' },
+    storeBrief: '（导师库为空）',
+    pageContext: '当前页面：张伟 教授'
+  });
+  assert.match(prompt, /科研技能：PyTorch、LaTeX/);
+  assert.match(prompt, /竞赛奖项：ICPC 银奖/);
+  assert.match(prompt, /绝不编造/);
+  assert.match(prompt, /save_email_draft/);
+  assert.match(prompt, /当前页面：张伟 教授/);
+});
+
+// ─── 写入校验用的顺序无关比较 ──────────────────────────────────────────────
+// chrome.storage 读回时 key 会按字母序重排，所以校验必须忽略顺序，
+// 否则每次保存都会误报"保存失败"（这个坑真踩过）
+
+test('stableStringify：key 顺序不同视为相等', () => {
+  const written = { provider: 'openai', baseUrl: 'http://x/v1', model: 'm', apiKey: 'k', maxSteps: 12 };
+  const readBack = { apiKey: 'k', baseUrl: 'http://x/v1', maxSteps: 12, model: 'm', provider: 'openai' };
+  assert.equal(stableStringify(written), stableStringify(readBack));
+  assert.notEqual(JSON.stringify(written), JSON.stringify(readBack)); // 裸 JSON.stringify 会误判
+});
+
+test('stableStringify：嵌套对象/数组同样顺序无关，且能识别真正的差异', () => {
+  assert.equal(
+    stableStringify({ a: { x: 1, y: [ { p: 1, q: 2 } ] } }),
+    stableStringify({ a: { y: [ { q: 2, p: 1 } ], x: 1 } })
+  );
+  assert.notEqual(stableStringify({ a: 1 }), stableStringify({ a: 2 }));
+  assert.notEqual(stableStringify({ a: 1 }), stableStringify({ a: 1, b: 2 }));
+  // undefined 字段按 JSON 语义丢弃，不该造成差异
+  assert.equal(stableStringify({ a: 1, b: undefined }), stableStringify({ a: 1 }));
 });

@@ -2,7 +2,11 @@
 
 一个 Chrome/Edge 扩展：在导师主页上点一下，agent 会自己读页面、必要时搜网页、把导师存进导师库、并起草一封你确认后就能发的联系邮件。
 
-和 1.0 的区别：1.0 是「把整页文本塞给模型，让模型返回一段 JSON」的一次性调用；2.0 是**带工具调用的 agent 循环**——模型自己决定读哪个页面、要不要搜索、什么时候入库、什么时候定稿，每一步都显示在侧边栏的 trace 里。
+版本演进：
+- **1.0** 一次性调用：把整页文本塞给模型，让模型返回一段 JSON。
+- **2.0** 带工具调用的 agent 循环：模型自己决定读哪个页面、要不要搜索、什么时候入库、什么时候定稿，每一步都显示在侧边栏的 trace 里。
+- **2.1** 界面拆成多个页面（主面板极简 + 各功能独立页面）、个人资料扩充到 9 项并自动保存、持久层加写入校验。
+- **2.2** 每个厂商的 API Key / BASE URL / 模型分开保存（切厂商互不覆盖）、任务页输入框与推荐提示词完整展示。
 
 ## 为什么 agent 循环放在 JS 里（而不是 Python）
 
@@ -40,11 +44,21 @@ const chatFn = async ({ messages, tools, signal }) =>
 
 ## 使用
 
-1. 首次：选模型商（DeepSeek / 智谱 / 通义 / Kimi / OpenAI / MiniMax / Anthropic），填 API Key；OpenAI 兼容的厂商可以直接改 BASE URL 和模型名
-2. 填一次自己的姓名、院校、背景（agent 写邮件时会用）
-3. 打开某位导师的主页，在侧边栏里选一个任务或自己写，点「▶ 开始」
+侧边栏是**多页面**结构，主面板只放一个主操作和三个入口：
 
-侧边栏有三个预设任务，也可以自己写：
+```
+主页  ✉️ 生成联系邮件   ← 主操作
+      📚 导师库      已存几位 · 几位待联系
+      👤 我的资料    已填 7/9 项 · 还缺：成绩 / 排名
+      ⚙️ 模型设置    DeepSeek · deepseek-chat
+```
+
+- 点「✉️ 生成联系邮件」进入任务页：任务描述框会按内容自动撑高（默认文案一眼看全），下面是三条推荐任务——标题 + **完整提示词正文**，点一下整段填进输入框，也可以自己改写。点「▶ 开始」后 trace 会实时显示「💭 思考 / 🔧 调用了什么工具 / 观察结果」，可以展开看模型实际读到了什么——这是排查「它为什么这么写」最直接的手段。跑完自动跳到邮件确认页。
+- 首次使用（还没填 API Key）会自动进入模型设置页；填好保存后自动回主页。
+- **每个厂商的 Key / BASE URL / 模型分开保存**：在 DeepSeek 和 OpenAI 之间来回切不会互相覆盖，各自的设置切回来还在。要换掉某一家的 Key，点模型设置页的「清除本厂商的 Key」即可。
+- **所有输入都是自动保存的**，点保存按钮只是额外确认一次，不会出现「填了半天没存上」。
+
+三个预设任务：
 
 | 预设 | agent 会做的事 |
 | --- | --- |
@@ -52,7 +66,20 @@ const chatFn = async ({ messages, tools, signal }) =>
 | 深挖研究方向 | 读页面 → 搜近期论文和课题组主页 → 找出可切入的点 → 重写邮件 |
 | 整理本页导师 | 在师资列表页上逐位入库（姓名 + 主页链接） |
 
-跑的过程中 trace 会实时显示「💭 思考 / 🔧 调用了什么工具 / 观察结果」，可以展开看模型实际读到了什么——这是排查「它为什么这么写」最直接的手段。
+## 我的资料（写邮件的素材来源）
+
+资料字段定义在 `lib/store.js` 的 `PROFILE_FIELDS` 里，界面表单、完整度统计、喂给模型的画像都由这张表生成——**以后想加字段（比如「意向方向」）只加一行**。
+
+| 字段 | 说明 |
+| --- | --- |
+| 姓名 / 本科院校 / 专业 | 自我介绍三件套 |
+| 成绩 / 排名 | 导师最关心的信息之一，界面会提示补 |
+| 竞赛奖项 | 邮件里最有说服力的部分之一 |
+| 科研技能 | 编程、工具链、英语等 |
+| 科研经历 | 项目、论文、实验室经历 |
+| 联系邮箱 / 联系电话 | 会写进邮件落款，方便导师回信 |
+
+主页会显示完整度并列出缺失的核心项（姓名/院校/专业/成绩排名），点提示条直达资料页。
 
 ## Agent 的工具集（`lib/tools.js`）
 
@@ -67,7 +94,7 @@ const chatFn = async ({ messages, tools, signal }) =>
 | `save_email_draft` | 把定稿邮件送进确认面板（收件人 / 主题 / 正文） |
 | `open_url` | 在学生浏览器里打开某个页面给他看 |
 
-导师库（侧边栏「📚 导师库」）按 `new → drafted → contacted → replied → meeting → offer / declined` 跟踪进度，可以导出 JSON。
+导师库（主页 → 📚 导师库）按 `new → drafted → contacted → replied → meeting → offer / declined` 跟踪进度，可以导出 JSON。
 
 ## 文件结构
 
@@ -76,28 +103,54 @@ professor-mail-extension/
 ├── manifest.json        MV3 配置（host_permissions 用于跨域读取页面）
 ├── background.js        只做一件事：点图标打开侧边栏
 ├── content.js           注入页面，结构化提取正文 / 邮箱 / 链接
-├── sidepanel.html       界面
-├── sidepanel.js         UI + 编排（只负责界面和状态）
+├── sidepanel.html       界面（主页 + 任务 / 邮件确认 / 导师库 / 资料 / 模型设置 六个页面）
+├── sidepanel.js         UI + 编排（页面路由、资料表单、agent trace）
 ├── lib/
 │   ├── providers.js     各家 API → 统一「能调工具的对话」接口（含 Anthropic 协议翻译）
 │   ├── agent.js         ReAct 循环 + 系统提示词 + chatFn 注入点
 │   ├── tools.js         agent 的工具集
-│   └── store.js         导师库 + 设置（chrome.storage.local）
-├── tests/smoke.test.mjs 单元测试：循环、消息翻译、参数容错、邮箱去混淆
-└── tools/e2e-verify.mjs 端到端自检：真 Chrome 加载扩展 + 本地 mock 模型跑完整任务
+│   └── store.js         持久层：导师库 / 设置 / 资料（含旧版本数据迁移）
+├── tests/smoke.test.mjs 单元测试：循环、消息翻译、参数容错、邮箱去混淆、迁移、提示词
+└── tools/e2e-verify.mjs 端到端自检：真 Chrome 加载扩展，走真实 UI 跑完整任务
 ```
+
+## 持久层设计（踩过的坑都在这）
+
+存在 `chrome.storage.local`，结构是**三个大对象**而不是一堆扁平 key：
+
+```
+llm:        { provider, maxSteps, perProvider: { 厂商: { apiKey, baseUrl, model } } }
+profile:    { name, school, major, gpaRank, awards, skills, research, email, phone }
+lang / professors / notes
+```
+
+- **为什么用大对象**：扁平 key 需要维护一份 key 列表，新增字段时漏加一个就变成「输入了但存不上」。现在读用 `get(null)` 全量读、写整对象覆盖，加字段只改 `PROFILE_FIELDS`。
+- **为什么按厂商存**：`llm.perProvider[厂商]` 一家一套 key / base URL / 模型。只存一份 key 的话，切到另一家再存一次就把上一家冲掉了；自定义的 BASE URL（比如「OpenAI 兼容」里填的本地或代理地址）同理。
+- **写入后读回校验**：`writeVerified()` 写完立刻读回比对，失败就把错误抛给界面显示，不再出现「明明没存上却显示 ✓ 已保存」。比对用的是顺序无关的 `stableStringify()`——因为 `chrome.storage` 读回时会把对象 key 按字母序重排，裸 `JSON.stringify` 比对会天天误报保存失败（这个坑真踩过）。
+- **旧数据迁移**：`migrate()` 兼容 1.0/2.0 的扁平字段（`apiKey` / `modelProvider` / `myName` / `myBackground`…）和 2.1 的单套 key，统一收敛到 `perProvider`。旧 key 故意不删以免误删数据，但只有在新结构不存在时才采纳它们，否则旧值会在每次启动时覆盖新值。迁移逻辑是纯函数，有单测。
 
 ## 开发自检
 
 ```bash
-# 单元测试（18 项：agent 循环 / Anthropic 消息合并 / 工具参数容错 / 邮箱去混淆）
+# 单元测试（32 项）
 node --test tests/smoke.test.mjs
 
-# 端到端（31 项）：起本地 mock 模型和假导师主页，用真 Chrome 加载扩展跑完一次任务
+# 端到端（44 项）：起本地 mock 模型和假导师主页，用真 Chrome 加载扩展跑完一次任务
 node tools/e2e-verify.mjs
 ```
 
-端到端脚本不碰任何外部 API，也不要你的 key：它自己起一个假的 OpenAI 兼容服务，按脚本返回「先读页面 → 入库 → 写草稿 → 收尾」，并断言 agent 每一步的工具结果（例如页面上 `zhangwei (at) cs (dot) example (dot) edu` 必须被还原成 `zhangwei@cs.example.edu` 再传给模型）。跑完会把侧边栏截图写到 `tools/last-run-*.png`。
+端到端脚本不碰任何外部 API，也不要你的 key：它自己起一个假的 OpenAI 兼容服务，按脚本返回「先读页面 → 入库 → 写草稿 → 收尾」，并且**走真实 UI 路径**（点模型商、填 key、点保存、填资料、点开始），断言这些：
+
+- 首次进入自动路由到模型设置页，配置完自动回主页
+- API Key 与个人资料真的落进 storage（含自动保存），且重开侧边栏后只剩主页可见、内容逐项恢复（这是两个曾经的真实 bug 的回归测试）
+- 切厂商时 Key 框不显示别家的 key、切回来 key 与自定义 BASE URL 都还在、两家 key 同时存在于 storage
+- 任务输入框能完整显示默认文案（不出现滚动条），三条推荐任务完整展示未被截断
+- 任何时刻只允许一个页面可见（防止「设置块一直挂着」那类问题复发）
+- 学生资料（竞赛、技能、排名）确实进入了系统提示词
+- 页面上 `zhangwei (at) cs (dot) example (dot) edu` 被还原成 `zhangwei@cs.example.edu` 再传给模型
+- trace 覆盖「读页面 → 入库 → 写草稿」，导师入库后状态推进到 `drafted`
+
+跑完会把各页面截图写到 `tools/last-run-*.png`。
 
 > 注：Chrome 137+ 已禁用 `--load-extension`（防侧载），所以脚本改走 CDP 的 `Extensions.loadUnpacked` 来加载未打包扩展。
 
