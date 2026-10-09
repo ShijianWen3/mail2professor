@@ -505,6 +505,63 @@
     }
     .settings-link:hover { color: var(--ink-mid); }
 
+    /* ── 研究方向评价页 ── */
+    :root { --subjective: #b45309; }
+    .radar-wrap { display: flex; justify-content: center; margin: 4px 0 8px; }
+    .radar { max-width: 100%; height: auto; }
+    .review-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .badge {
+      font-size: 10.5px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+    }
+    .badge-strong { background: #d4ede0; color: #2e7d52; }
+    .badge-solid { background: #e3ecf8; color: #1a56c4; }
+    .badge-fair { background: #f6efdc; color: #8a6d1f; }
+    .badge-weak { background: #f8dcdc; color: #b91c1c; }
+    .badge-unknown { background: #eeeae3; color: #8a8680; }
+    .legend { font-size: 10px; color: var(--ink-light); line-height: 1.6; margin-bottom: 8px; }
+    .axis-row { border-top: 1px solid var(--border); padding: 8px 0; }
+    .axis-head { display: flex; align-items: center; gap: 6px; }
+    .axis-name { font-size: 12px; font-weight: 600; flex: 1; }
+    .axis-name.is-subjective { color: var(--subjective); }
+    .axis-measures { font-size: 10px; color: var(--ink-light); margin-top: 1px; }
+    .axis-reason { font-size: 11px; color: var(--ink-mid); line-height: 1.65; margin-top: 4px; }
+    .axis-evidence { margin-top: 4px; }
+    .axis-evidence a {
+      display: block;
+      font-size: 10px;
+      color: #1a56c4;
+      text-decoration: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+    .axis-evidence a:hover { text-decoration: underline; }
+    .axis-evidence span { font-size: 10px; color: var(--ink-light); }
+    .gate-box {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 9px 11px;
+      margin: 10px 0;
+      background: var(--paper-warm);
+    }
+    .gate-box.is-blocked { background: #fdf0ef; border-color: var(--accent-light); }
+    .gate-title { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; margin-bottom: 3px; }
+    .gate-title.is-blocked { color: #b91c1c; }
+    .review-conclusion {
+      font-size: 11.5px;
+      line-height: 1.7;
+      color: var(--ink-mid);
+      border-left: 2px solid var(--accent);
+      padding-left: 9px;
+      margin-top: 10px;
+    }
+    .review-empty { font-size: 11.5px; color: var(--ink-light); line-height: 1.75; padding: 6px 0 10px; }
+
     .divider { height: 1px; background: var(--border); margin: 12px 0; }
     .hidden { display: none !important; }
   </style>
@@ -615,6 +672,9 @@
     <button class="btn btn-secondary" id="mark-contacted-btn" data-i18n="markContacted">✓ 标记为已联系</button>
     <button class="btn btn-secondary" id="result-back-btn" data-i18n="backToTask">← 返回任务</button>
   </div>
+  <div class="action-row">
+    <button class="btn btn-primary" id="go-review-btn" data-i18n="goReview">🧭 评价这个研究方向</button>
+  </div>
 </section>
 
 <!-- ④ 导师库 -->
@@ -661,6 +721,38 @@
   <div class="autosave-row">
     <button class="btn btn-save" id="model-save-btn" data-i18n="saveBtn">保存</button>
     <span class="autosave-tip" id="model-tip"></span>
+  </div>
+</section>
+
+<!-- ⑦ 研究方向评价 -->
+<section class="page hidden" id="page-review">
+  <div id="review-notice"></div>
+  <div id="review-target"></div>
+
+  <div class="field-label" data-i18n="profileLabel">目标画像（决定权重和基准线）</div>
+  <div class="model-selector" id="review-profile-selector"></div>
+
+  <div class="run-row">
+    <button class="btn btn-primary" id="review-run-btn" data-i18n="reviewRun">🧭 开始评价（联网搜索）</button>
+    <button class="btn btn-secondary hidden" id="review-stop-btn" data-i18n="stopBtn">■ 停止</button>
+  </div>
+
+  <div class="hidden" id="review-result">
+    <div class="radar-wrap" id="review-radar"></div>
+    <div class="review-summary" id="review-summary"></div>
+    <div class="legend" data-i18n="reviewLegend">琥珀色 = 自评项 · 灰圈 = 无数据 · 虚线 = 你的目标画像基准</div>
+    <div id="review-axes"></div>
+    <div id="review-gate"></div>
+    <div class="review-conclusion" id="review-conclusion"></div>
+  </div>
+
+  <div style="text-align:center;margin-top:10px">
+    <span class="settings-link hidden" id="review-trace-toggle" data-i18n="showTrace">查看搜索过程</span>
+  </div>
+
+  <div class="trace hidden" id="review-trace-panel">
+    <div class="trace-title" id="review-trace-title">AGENT TRACE</div>
+    <div id="review-trace-body"></div>
   </div>
 </section>
 

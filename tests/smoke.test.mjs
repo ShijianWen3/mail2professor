@@ -9,6 +9,7 @@ import {
   sanitizeJsonString,
   parseToolArguments,
   extractTextToolCall,
+  toToolCall,
   toAnthropicMessages,
   toOpenAIMessages
 } from '../lib/providers.js';
@@ -16,6 +17,12 @@ import { runAgent, packToolResult, buildSystemPrompt, profileBlock } from '../li
 import { extractEmails, deobfuscate, looksLikeFacultyList, normalizeUrl } from '../lib/tools.js';
 import { migrate, profileCompleteness, PROFILE_FIELDS, stableStringify } from '../lib/store.js';
 import { providerSettings, currentApiKey, resolveConfig } from '../lib/providers.js';
+import {
+  AXES, PROFILES, DEFAULT_PROFILE, SUBJECTIVE_WEIGHT_CAP, RESOURCE_GATE, LEVELS,
+  validateReview, aggregate, normalizeLevel, normalizeGateLevel, levelLabel,
+  buildReviewSystemPrompt, REVIEW_MAX_STEPS
+} from '../lib/review.js';
+import { buildRadarSvg, axisPoint, RING_LEVELS } from '../lib/radar.js';
 
 const config = {
   provider: 'deepseek',
@@ -168,6 +175,26 @@ test('runAgent：模型调用失败时抛错并产生 error 事件', async () =>
   assert.ok(events.some((e) => e.type === 'error'));
 });
 
+test('runAgent：工具参数被截断时自愈（回填错误让模型重写，而不是整轮失败）', async () => {
+  const events = [];
+  const chatFn = scriptedChat([
+    // 第一次：参数被截断，解析不出来（真实场景里就是 max_tokens 用完了）
+    { content: '', toolCalls: [{ id: 'c1', name: 't_echo', args: {}, argError: '工具参数不是合法 JSON（共 900 字符，没有收尾括号，像是被输出长度截断）' }] },
+    { content: '好，我写短一点重试', toolCalls: [] }
+  ]);
+
+  const result = await runAgent({
+    config, tools: [echoTool()], messages: baseMessages, maxSteps: 4,
+    onEvent: (e) => events.push(e), chatFn
+  });
+
+  assert.equal(result.content, '好，我写短一点重试');
+  const toolMessage = result.messages.find((m) => m.role === 'tool');
+  assert.match(toolMessage.content, /参数解析失败/);
+  assert.match(toolMessage.content, /写紧凑些再试/);
+  assert.ok(events.some((e) => e.type === 'tool_end'), '应该照常产出观察事件');
+});
+
 test('toAnthropicMessages：多个工具结果必须合并进同一条 user 消息', () => {
   const messages = [
     { role: 'system', content: 'sys' },
@@ -234,6 +261,30 @@ test('parseToolArguments：容忍代码块、真实换行、空参数', () => {
   assert.deepEqual(parseToolArguments({ a: 1 }), { a: 1 });
   // 模型在 JSON 字符串里塞了真实换行 —— sanitizeJsonString 负责救回来
   assert.deepEqual(parseToolArguments('{"body":"第一行\n第二行"}'), { body: '第一行\n第二行' });
+});
+
+test('parseToolArguments：尾逗号（模型手写 JSON 的常见毛病）也能救回来', () => {
+  assert.deepEqual(parseToolArguments('{"a":1,"b":[1,2,],}'), { a: 1, b: [1, 2] });
+});
+
+test('parseToolArguments：被截断时错误信息要说清楚（否则排查不动）', () => {
+  // 模拟输出被 max_tokens 截断：JSON 写到一半就没了
+  const truncated = '{"target_profile":"master","conclusion":"这个方向适合目标是\\"进大厂做数据库';
+  assert.throws(
+    () => parseToolArguments(truncated),
+    (e) => /不是合法 JSON/.test(e.message) && /没有收尾括号/.test(e.message) && /截断/.test(e.message)
+  );
+});
+
+test('toToolCall：解析失败不再抛异常，而是挂成 argError 交给 agent 自愈', () => {
+  const ok = toToolCall('c1', 'save_review', '{"a":1}');
+  assert.deepEqual(ok, { id: 'c1', name: 'save_review', args: { a: 1 } });
+
+  const broken = toToolCall('c2', 'save_review', '{"axes":[{"id":"fit","level":"稳');
+  assert.equal(broken.id, 'c2');
+  assert.equal(broken.name, 'save_review');
+  assert.deepEqual(broken.args, {});
+  assert.match(broken.argError, /不是合法 JSON/);
 });
 
 test('sanitizeJsonString：把字符串值里的控制字符转义', () => {
@@ -464,4 +515,205 @@ test('stableStringify：嵌套对象/数组同样顺序无关，且能识别真�
   assert.notEqual(stableStringify({ a: 1 }), stableStringify({ a: 1, b: 2 }));
   // undefined 字段按 JSON 语义丢弃，不该造成差异
   assert.equal(stableStringify({ a: 1, b: undefined }), stableStringify({ a: 1 }));
+});
+
+// ─── 研究方向评价：维度定义、校验、聚合、蛛网图 ──────────────────────────────
+
+const EVIDENCE = [{ title: '某行业报告', url: 'https://example.org/report', note: '2025 年市场规模同比 +34%' }];
+
+function buildReview(levels = {}, gate = '充足') {
+  return {
+    axes: AXES.map((axis) => ({
+      id: axis.id,
+      level: levels[axis.id] || '一般',
+      reason: '测试理由',
+      evidence: EVIDENCE
+    })),
+    gate: { level: gate, reason: '算力可租', evidence: EVIDENCE },
+    target_profile: 'phd',
+    conclusion: '测试结论'
+  };
+}
+
+const allSolid = () => Object.fromEntries(AXES.map((axis) => [axis.id, 'solid']));
+
+test('评价维度：7 条轴，每条都有四档锚点/检索动作/量化代理', () => {
+  assert.equal(AXES.length, 7);
+  for (const axis of AXES) {
+    assert.ok(axis.label.zh && axis.label.en && axis.short.zh, `${axis.id} 缺标签`);
+    for (const level of ['strong', 'solid', 'fair', 'weak']) {
+      assert.ok(axis.anchors[level].zh && axis.anchors[level].en, `${axis.id} 缺 ${level} 的判定标准`);
+    }
+    assert.ok(axis.searchHints.zh.length >= 2, `${axis.id} 的检索动作太少`);
+    assert.ok(axis.proxies.zh && axis.measures.zh, `${axis.id} 缺可量化代理`);
+  }
+  // 主客观分层：只有基础匹配度是自评项
+  assert.deepEqual(AXES.filter((a) => a.subjective).map((a) => a.id), ['fit']);
+  // 闸门独立存在，不混进轴里
+  assert.ok(RESOURCE_GATE.anchors.strong.zh);
+  assert.ok(!AXES.some((a) => a.id === 'resources'));
+});
+
+test('目标画像：权重和为 1、主观项权重不超上限、基准线覆盖全部轴', () => {
+  for (const [key, profile] of Object.entries(PROFILES)) {
+    const sum = Object.values(profile.weights).reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(sum - 1) < 1e-9, `${key} 权重和=${sum}`);
+    assert.equal(Object.keys(profile.weights).length, AXES.length, `${key} 权重缺轴`);
+    for (const axis of AXES) {
+      if (axis.subjective) {
+        assert.ok(profile.weights[axis.id] <= SUBJECTIVE_WEIGHT_CAP + 1e-9, `${key} 的自评项权重超过上限`);
+      }
+      assert.ok(profile.baseline[axis.id], `${key} 基准线缺 ${axis.id}`);
+    }
+  }
+});
+
+test('validateReview：缺轴、给档位却不给依据 都会被拦下', () => {
+  const incomplete = validateReview({ axes: [{ id: 'fit', level: '夯' }], gate: { level: '充足' } });
+  assert.equal(incomplete.ok, false);
+  assert.equal(incomplete.issues.length, 7); // 有的是缺轴，有的是缺依据
+
+  const complete = validateReview(buildReview());
+  assert.equal(complete.ok, true, complete.issues.join(';'));
+
+  const stripped = buildReview();
+  stripped.axes = stripped.axes.map((axis, i) => (i < 2 ? { id: axis.id, level: axis.level } : axis));
+  const bad = validateReview(stripped);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.issues.length, 2);
+  assert.match(bad.issues[0], /没有任何依据/);
+});
+
+test('validateReview：未知档位不需要依据，档位写法宽容', () => {
+  const review = buildReview();
+  review.axes = review.axes.map((axis, i) => (i === 0 ? { id: axis.id, level: '未知' } : axis));
+  const result = validateReview(review);
+  assert.equal(result.ok, true, result.issues.join(';'));
+  assert.equal(result.review.axes[0].level, 'unknown');
+
+  assert.equal(normalizeLevel('夯'), 'strong');
+  assert.equal(normalizeLevel('Strong'), 'strong');
+  assert.equal(normalizeLevel('5'), 'strong');
+  assert.equal(normalizeLevel('一般'), 'fair');
+  assert.equal(normalizeLevel(''), null);
+  assert.equal(normalizeLevel('很好'), null);
+});
+
+test('validateReview：闸门档位单独归一化（充足/一般/不足/未知）', () => {
+  assert.equal(normalizeGateLevel('充足'), 'ok');
+  assert.equal(normalizeGateLevel('一般'), 'medium');
+  assert.equal(normalizeGateLevel('不足'), 'blocked');
+  assert.equal(normalizeGateLevel('未知'), 'unknown');
+  assert.equal(normalizeGateLevel('Sufficient'), 'ok');
+  assert.equal(normalizeGateLevel(''), 'unknown');
+  assert.equal(levelLabel('strong', 'zh'), '夯');
+  assert.equal(levelLabel('strong', 'en'), 'Strong');
+});
+
+test('aggregate：权重随目标画像变（同一份评价，读博与硕士就业结论不同）', () => {
+  const levels = {
+    industry: 'strong', flexibility: 'strong', ceiling: 'weak',
+    momentum: 'weak', competition: 'fair', achievability: 'fair', fit: 'solid'
+  };
+  const review = validateReview(buildReview(levels)).review;
+
+  const phd = aggregate(review, 'phd');
+  const master = aggregate(review, 'master');
+  assert.equal(phd.level, 'fair');
+  assert.equal(master.level, 'solid');
+  assert.notEqual(phd.level, master.level);
+  assert.equal(phd.coverage.known, 7);
+});
+
+test('aggregate：自评项权重被封顶（改自评项不如改客观项影响大）', () => {
+  const base = validateReview(buildReview({ fit: 'weak', ceiling: 'weak' })).review;
+  const fitUp = validateReview(buildReview({ fit: 'strong', ceiling: 'weak' })).review;
+  const ceilingUp = validateReview(buildReview({ fit: 'weak', ceiling: 'strong' })).review;
+
+  const deltaFit = aggregate(fitUp, 'phd').score - aggregate(base, 'phd').score;
+  const deltaCeiling = aggregate(ceilingUp, 'phd').score - aggregate(base, 'phd').score;
+  assert.ok(deltaFit > 0 && deltaCeiling > 0);
+  assert.ok(deltaCeiling > deltaFit, `客观项影响应更大：自评 ${deltaFit} vs 客观 ${deltaCeiling}`);
+});
+
+test('aggregate：未知档位不计入，但体现在数据覆盖上', () => {
+  const review = validateReview(buildReview()).review;
+  review.axes = review.axes.map((axis) => (axis.id === 'industry' ? { ...axis, level: 'unknown' } : axis));
+  const agg = aggregate(review, 'master');
+  assert.equal(agg.coverage.known, 6);
+  assert.equal(agg.coverage.total, 7);
+  assert.equal(agg.gate, 'ok');
+  assert.equal(agg.downgraded, false);
+});
+
+test('aggregate：资源闸门不达标直接降一档', () => {
+  const good = validateReview(buildReview(allSolid(), '充足')).review;
+  const blocked = validateReview(buildReview(allSolid(), '不足')).review;
+
+  assert.equal(aggregate(good, 'phd').level, 'solid');
+  assert.equal(aggregate(blocked, 'phd').rawLevel, 'solid');
+  assert.equal(aggregate(blocked, 'phd').level, 'fair');
+  assert.equal(aggregate(blocked, 'phd').downgraded, true);
+  assert.equal(aggregate(blocked, 'phd').gate, 'blocked');
+});
+
+test('评价提示词：含 7 条轴、四档锚点、检索动作，并要求先搜再定档', () => {
+  const prompt = buildReviewSystemPrompt({
+    lang: 'zh',
+    professor: { name: '张伟', tags: ['自然语言处理'], summary: '做 NLP', school: '测试大学' },
+    profileId: 'phd',
+    storeBrief: '（空）'
+  });
+  for (const axis of AXES) assert.ok(prompt.includes(axis.label.zh), `提示词缺轴 ${axis.id}`);
+  assert.match(prompt, /评分锚点/);
+  assert.match(prompt, /每条轴都必须先联网搜索/);
+  assert.match(prompt, /save_review/);
+  assert.match(prompt, /张伟/);
+  assert.match(prompt, /读博/);
+  assert.match(prompt, /资源可获得性/);
+  assert.match(prompt, /不要编造精确分数/);
+  assert.ok(REVIEW_MAX_STEPS >= 15, '默认步数要够搜完 7 条轴');
+});
+
+// ─── 蛛网图几何 ─────────────────────────────────────────────────────────────
+
+const GEOM = { size: 320, radius: 100, cx: 160, cy: 160 };
+
+test('蛛网图：第一条轴在正上方，档位线性映射到半径', () => {
+  assert.deepEqual(axisPoint(0, 5, GEOM), [160, 60]);
+  assert.deepEqual(axisPoint(0, 4, GEOM), [160, 80]);
+  assert.deepEqual(axisPoint(0, 2, GEOM), [160, 120]);
+  assert.deepEqual(axisPoint(0, 0, GEOM), [160, 160]);
+  const [x1] = axisPoint(1, 5, GEOM);
+  assert.ok(x1 > 160, '第二条轴应落在右侧（顺时针排列）');
+});
+
+test('蛛网图：7 个顶点、四圈网格、基准虚线、自评色都在', () => {
+  const review = validateReview(buildReview({ fit: 'weak', ceiling: 'strong' })).review;
+  const svg = buildRadarSvg({ review, baseline: PROFILES.phd.baseline, size: 320 });
+
+  const scorePoints = svg.match(/class="radar-score" points="([^"]+)"/)[1].split(' ');
+  assert.equal(scorePoints.length, AXES.length);
+  assert.equal((svg.match(/class="radar-grid"/g) || []).length, RING_LEVELS.length);
+  assert.match(svg, /class="radar-baseline"[^>]*stroke-dasharray/);
+  assert.match(svg, /class="radar-vertex subjective"/);
+  for (const axis of AXES) assert.ok(svg.includes(axis.short.zh), `图里缺轴名 ${axis.id}`);
+});
+
+test('蛛网图：无数据的轴画成圆心空心圈并标灰', () => {
+  const review = validateReview(buildReview()).review;
+  review.axes = review.axes.map((axis) => (axis.id === 'industry' ? { ...axis, level: 'unknown' } : axis));
+  const svg = buildRadarSvg({ review, baseline: PROFILES.phd.baseline, size: 320 });
+
+  assert.match(svg, /class="radar-vertex unknown"/);
+  assert.match(svg, /radar-axis-label is-unknown/);
+  const unknown = svg.match(/class="radar-vertex unknown" cx="([\d.]+)" cy="([\d.]+)"/);
+  assert.equal(unknown[1], '160', '无数据顶点应落在圆心');
+  assert.equal(unknown[2], '160');
+});
+
+test('蛛网图：没有评价数据也能出图（不崩）', () => {
+  const svg = buildRadarSvg({ review: { axes: [] }, size: 300 });
+  assert.match(svg, /<svg/);
+  assert.ok(svg.includes('radar-score'));
 });

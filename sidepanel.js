@@ -18,6 +18,12 @@ import {
 } from './lib/store.js';
 import { runAgent, buildSystemPrompt, describeProvider } from './lib/agent.js';
 import { createTools } from './lib/tools.js';
+import {
+  AXES, PROFILES, DEFAULT_PROFILE, REVIEW_MAX_STEPS, RESOURCE_GATE,
+  levelLabel, gateLabel, gateTone, aggregate,
+  buildReviewSystemPrompt, buildReviewTask, levelScore
+} from './lib/review.js';
+import { buildRadarSvg } from './lib/radar.js';
 
 // ─── 文案 ───────────────────────────────────────────────────────────────────
 const i18n = {
@@ -69,7 +75,31 @@ const i18n = {
     exportBtn: 'Export JSON',
     emptyPipeline: 'No professors saved yet. Run a task on a professor page and the agent will fill this in.',
     pipelineCount: (n) => `${n} professor(s)`,
-    status: { new: 'New', drafted: 'Drafted', contacted: 'Contacted', replied: 'Replied', meeting: 'Meeting', offer: 'Offer', declined: 'Declined', archived: 'Archived' }
+    status: { new: 'New', drafted: 'Drafted', contacted: 'Contacted', replied: 'Replied', meeting: 'Meeting', offer: 'Offer', declined: 'Declined', archived: 'Archived' },
+
+    // 研究方向评价
+    titleReview: 'Direction review',
+    goReview: '🧭 Review this research direction',
+    reviewRun: '🧭 Start review (searches the web)',
+    reviewEmpty: 'No review yet for this direction. The agent searches the web for publication trends, job postings, industry reports and acceptance rates, then draws a radar chart of 7 axes.',
+    profileLabel: 'TARGET PROFILE (sets weights and baseline)',
+    reviewSummaryLevel: 'Overall',
+    reviewObjective: 'Objective only',
+    reviewCoverage: (n, total) => `data ${n}/${total}`,
+    reviewGate: 'Resource gate',
+    reviewDowngraded: '⚠ downgraded by the resource gate',
+    reviewEvidence: 'Evidence',
+    reviewNoEvidence: 'no evidence attached',
+    reviewLegend: 'amber = self-assessed · hollow = no data · dashed = your target baseline',
+    reviewScope: 'This scores the research direction, not the professor.',
+    reviewBaseline: 'dashed = target profile',
+    reviewRunAgain: '🧭 Re-run review',
+    reviewDone: 'Done — the radar chart is below.',
+    reviewNoResult: 'Finished without submitting a review (save_review was never called).',
+    busyElsewhere: 'Another agent run is still in progress — wait for it to finish.',
+    reviewFromCrm: 'Review this direction',
+    showTrace: 'Show the search log',
+    hideTrace: 'Hide the search log'
   },
   zh: {
     back: '返回',
@@ -119,7 +149,31 @@ const i18n = {
     exportBtn: '导出 JSON',
     emptyPipeline: '导师库还是空的。在导师主页上跑一次任务，agent 会自动填进来。',
     pipelineCount: (n) => `共 ${n} 位导师`,
-    status: { new: '待联系', drafted: '已起草', contacted: '已联系', replied: '已回复', meeting: '已约聊', offer: '有offer', declined: '已婉拒', archived: '归档' }
+    status: { new: '待联系', drafted: '已起草', contacted: '已联系', replied: '已回复', meeting: '已约聊', offer: '有offer', declined: '已婉拒', archived: '归档' },
+
+    // 研究方向评价
+    titleReview: '研究方向评价',
+    goReview: '🧭 评价这个研究方向',
+    reviewRun: '🧭 开始评价（联网搜索）',
+    reviewEmpty: '这个方向还没有评价过。评价会联网搜索论文趋势、招聘岗位、行业报告、顶会录取率等数据，然后画成 7 条轴的蛛网图。',
+    profileLabel: '目标画像（决定权重和基准线）',
+    reviewSummaryLevel: '综合档位',
+    reviewObjective: '仅客观项',
+    reviewCoverage: (n, total) => `数据覆盖 ${n}/${total}`,
+    reviewGate: '资源闸门',
+    reviewDowngraded: '⚠ 因资源闸门降级',
+    reviewEvidence: '依据',
+    reviewNoEvidence: '这条轴没有附依据',
+    reviewLegend: '琥珀色 = 自评项 · 灰圈 = 无数据 · 虚线 = 你的目标画像基准',
+    reviewScope: '只评研究方向，不评导师本人。',
+    reviewBaseline: '虚线 = 目标画像',
+    reviewRunAgain: '🧭 重新评价',
+    reviewDone: '完成，蛛网图在下方。',
+    reviewNoResult: '跑完了但没有提交评价（模型没有调用 save_review）。',
+    busyElsewhere: '还有一次 agent 任务在跑，等它结束再来。',
+    reviewFromCrm: '评估这个方向',
+    showTrace: '查看搜索过程',
+    hideTrace: '收起搜索过程'
   }
 };
 
@@ -173,16 +227,34 @@ const modelMaxSteps = $('model-max-steps');
 const modelTip = $('model-tip');
 const clearKeyLink = $('model-clear-key');
 
+const reviewNotice = $('review-notice');
+const reviewTargetEl = $('review-target');
+const reviewProfileSel = $('review-profile-selector');
+const reviewRunBtn = $('review-run-btn');
+const reviewStopBtn = $('review-stop-btn');
+const reviewTracePanel = $('review-trace-panel');
+const reviewTraceTitle = $('review-trace-title');
+const reviewTraceBody = $('review-trace-body');
+const reviewTraceToggle = $('review-trace-toggle');
+const reviewResultEl = $('review-result');
+const reviewRadarEl = $('review-radar');
+const reviewSummaryEl = $('review-summary');
+const reviewAxesEl = $('review-axes');
+const reviewGateEl = $('review-gate');
+const reviewConclusionEl = $('review-conclusion');
+
 // ─── State ──────────────────────────────────────────────────────────────────
 const store = new Store();
 const state = { llm: null, profile: null };
 let currentPage = 'home';
 const pageStack = [];
-let running = false;
-let abortController = null;
+let activeRun = null; // { kind: 'task' | 'review', controller } —— 同时只允许一个 agent 在跑
 let currentDraft = null;
 let profileSaveTimer = null;
 let lastAutoTask = '';
+let reviewTargetId = null;   // 评价对象（导师库里的 id）
+let currentReview = null;    // 当前展示的评价
+let reviewProfile = DEFAULT_PROFILE;
 
 const TASK_KEYS = ['taskDefault', 'taskDig', 'taskFaculty'];
 const MASK = '••••••••';
@@ -212,8 +284,11 @@ function compactArgs(args) {
 }
 
 // ─── 页面路由 ───────────────────────────────────────────────────────────────
-const PAGES = ['home', 'task', 'result', 'crm', 'profile', 'model'];
-const PAGE_TITLE = { task: 'titleTask', result: 'titleResult', crm: 'titleCrm', profile: 'titleProfile', model: 'titleModel' };
+const PAGES = ['home', 'task', 'result', 'crm', 'profile', 'model', 'review'];
+const PAGE_TITLE = {
+  task: 'titleTask', result: 'titleResult', crm: 'titleCrm',
+  profile: 'titleProfile', model: 'titleModel', review: 'titleReview'
+};
 
 function go(page, { viaBack = false } = {}) {
   if (page === currentPage) return;
@@ -237,6 +312,7 @@ function renderPage(page) {
   if (page === 'crm') renderCrm();
   if (page === 'profile') renderProfileForm();
   if (page === 'model') renderModelForm();
+  if (page === 'review') renderReviewPage();
 }
 
 // 顶部副标题：主页显示当前模型，子页面显示页面名
@@ -507,60 +583,78 @@ taskInput.addEventListener('input', () => {
   markActivePreset();
 });
 
-function resetTrace() {
-  traceBody.innerHTML = '';
-  traceTitle.textContent = t('traceTitle');
+// 两处都会跑 agent（任务页、评价页），所以 trace 渲染按"目标"参数化
+const taskTrace = { status: taskStatusArea, body: traceBody, title: traceTitle, panel: tracePanel };
+const reviewTrace = { status: reviewNotice, body: reviewTraceBody, title: reviewTraceTitle, panel: reviewTracePanel };
+
+function resetTrace(target) {
+  target.body.innerHTML = '';
+  target.title.textContent = t('traceTitle');
 }
 
-function appendTrace(html) {
+function appendTrace(target, html) {
   const row = document.createElement('div');
   row.className = 'trace-row';
   row.innerHTML = html;
-  traceBody.appendChild(row);
+  target.body.appendChild(row);
   row.scrollIntoView?.({ block: 'nearest' });
 }
 
-function handleEvent(event) {
-  switch (event.type) {
-    case 'thinking':
-      setStatus(taskStatusArea, 'loading', t('thinking')(event.step));
-      break;
-    case 'thought':
-      appendTrace(`<span class="trace-thought">💭 ${escapeHtml(event.content)}</span>`);
-      break;
-    case 'tool_start':
-      appendTrace(`<span class="trace-tool">🔧 ${escapeHtml(event.name)}(${escapeHtml(compactArgs(event.args))})</span>`);
-      break;
-    case 'tool_end': {
-      const len = event.result?.length || 0;
-      const preview = escapeHtml(event.result?.slice(0, 1200) || '');
-      const row = document.createElement('div');
-      row.className = 'trace-row trace-obs';
-      row.innerHTML = `<details><summary>${escapeHtml(t('observation')(len))}</summary><pre>${preview}</pre></details>`;
-      traceBody.appendChild(row);
-      row.scrollIntoView?.({ block: 'nearest' });
-      break;
+function makeEventHandler(target) {
+  return (event) => {
+    switch (event.type) {
+      case 'thinking':
+        setStatus(target.status, 'loading', t('thinking')(event.step));
+        break;
+      case 'thought':
+        appendTrace(target, `<span class="trace-thought">💭 ${escapeHtml(event.content)}</span>`);
+        break;
+      case 'tool_start':
+        appendTrace(target, `<span class="trace-tool">🔧 ${escapeHtml(event.name)}(${escapeHtml(compactArgs(event.args))})</span>`);
+        break;
+      case 'tool_end': {
+        const len = event.result?.length || 0;
+        const preview = escapeHtml(event.result?.slice(0, 1200) || '');
+        const row = document.createElement('div');
+        row.className = 'trace-row trace-obs';
+        row.innerHTML = `<details><summary>${escapeHtml(t('observation')(len))}</summary><pre>${preview}</pre></details>`;
+        target.body.appendChild(row);
+        row.scrollIntoView?.({ block: 'nearest' });
+        break;
+      }
+      case 'final':
+        appendTrace(target, `<span class="trace-final">✓ ${escapeHtml(event.content || '')}</span>`);
+        break;
+      case 'limit':
+      case 'error':
+        appendTrace(target, `<span class="trace-error">⚠ ${escapeHtml(event.message)}</span>`);
+        break;
     }
-    case 'final':
-      appendTrace(`<span class="trace-final">✓ ${escapeHtml(event.content || '')}</span>`);
-      break;
-    case 'limit':
-    case 'error':
-      appendTrace(`<span class="trace-error">⚠ ${escapeHtml(event.message)}</span>`);
-      break;
+  };
+}
+
+// ─── 运行状态（同时只允许一个 agent 在跑）─────────────────────────────────────
+function setRunning(kind, next) {
+  if (kind === 'task') {
+    runBtn.disabled = next;
+    runBtn.classList.toggle('hidden', next);
+    stopBtn.classList.toggle('hidden', !next);
+    taskInput.disabled = next;
+  } else {
+    reviewRunBtn.disabled = next;
+    reviewRunBtn.classList.toggle('hidden', next);
+    reviewStopBtn.classList.toggle('hidden', !next);
   }
 }
 
-function setRunning(next) {
-  running = next;
-  runBtn.disabled = next;
-  runBtn.classList.toggle('hidden', next);
-  stopBtn.classList.toggle('hidden', !next);
-  taskInput.disabled = next;
+function busyElsewhere(kind, target) {
+  if (!activeRun || activeRun.kind === kind) return false;
+  setStatus(target.status, 'error', t('busyElsewhere'));
+  return true;
 }
 
 async function startRun() {
-  if (running) return;
+  if (busyElsewhere('task', taskTrace)) return;
   if (!currentApiKey(state.llm)) {
     setStatus(taskStatusArea, 'error', t('errorApiKey'));
     setStatus(modelNotice, 'info', t('firstRun'));
@@ -602,11 +696,11 @@ async function startRun() {
     }
   });
 
-  resetTrace();
+  resetTrace(taskTrace);
   show(tracePanel);
   clearStatus(taskStatusArea);
-  setRunning(true);
-  abortController = new AbortController();
+  setRunning('task', true);
+  activeRun = { kind: 'task', controller: new AbortController() };
 
   try {
     const result = await runAgent({
@@ -614,8 +708,9 @@ async function startRun() {
       tools,
       messages,
       maxSteps: state.llm.maxSteps || DEFAULT_MAX_STEPS,
-      onEvent: handleEvent,
-      signal: abortController.signal
+      maxTokens: 3000,
+      onEvent: makeEventHandler(taskTrace),
+      signal: activeRun.controller.signal
     });
 
     if (result.stopped) setStatus(taskStatusArea, 'error', t('stopped'));
@@ -626,15 +721,236 @@ async function startRun() {
   } catch (e) {
     setStatus(taskStatusArea, 'error', t('aiError') + e.message);
   } finally {
-    setRunning(false);
-    abortController = null;
+    setRunning('task', false);
+    activeRun = null;
     renderHome();
     if (currentDraft) go('result');
   }
 }
 
 runBtn.addEventListener('click', startRun);
-stopBtn.addEventListener('click', () => abortController?.abort());
+stopBtn.addEventListener('click', () => activeRun?.controller.abort());
+
+// ─── 研究方向评价页 ─────────────────────────────────────────────────────────
+function reviewProfessor() {
+  return reviewTargetId ? store.professors[reviewTargetId] || null : null;
+}
+
+function openReview(profId, { push = true } = {}) {
+  reviewTargetId = profId || reviewTargetId;
+  currentReview = reviewTargetId ? store.lastReview(reviewTargetId) : null;
+  reviewProfile = currentReview?.targetProfile || reviewProfile || DEFAULT_PROFILE;
+  if (push) go('review');
+  else renderReviewPage();
+}
+
+function renderReviewProfileChips() {
+  reviewProfileSel.innerHTML = '';
+  Object.entries(PROFILES).forEach(([key, profile]) => {
+    const btn = document.createElement('button');
+    btn.className = 'model-btn';
+    btn.dataset.profile = key;
+    btn.textContent = label(profile.label);
+    btn.title = label(profile.hint);
+    btn.classList.toggle('active', key === reviewProfile);
+    btn.addEventListener('click', () => {
+      reviewProfile = key;
+      renderReviewPage(); // 权重和基准线都是本地算的，切画像不用重新联网
+    });
+    reviewProfileSel.appendChild(btn);
+  });
+}
+
+function renderReviewPage() {
+  renderReviewProfileChips();
+
+  const prof = reviewProfessor();
+  const targetLabel = prof ? `${prof.name || '未命名'}${prof.school ? ` @${prof.school}` : ''}` : t('notConfigured');
+  const tags = (prof?.tags || []).map((tag) => `<span class="research-tag">${escapeHtml(tag)}</span>`).join('');
+  reviewTargetEl.innerHTML = prof
+    ? `<div class="prof-card"><div class="prof-name">${escapeHtml(targetLabel)}</div>${tags}<div class="prof-research" style="margin-top:6px">${escapeHtml(prof.summary || '')}</div></div>`
+    : `<div class="review-empty">${escapeHtml(t('reviewEmpty'))}</div>`;
+
+  if (!currentReview) {
+    hide(reviewResultEl);
+    hide(reviewTraceToggle);
+    reviewRunBtn.textContent = t('reviewRun');
+    // 没评价过时给一句说明，让用户知道点下去会发生什么
+    if (prof) notice(reviewNotice, 'info', `${t('reviewEmpty')}<br><span style="opacity:.8">${escapeHtml(t('reviewScope'))}</span>`);
+    else reviewNotice.innerHTML = '';
+    return;
+  }
+
+  reviewRunBtn.textContent = t('reviewRunAgain');
+  renderReview(currentReview);
+}
+
+function badge(level) {
+  const kind = levelScore(level) ? level : 'unknown';
+  return `<span class="badge badge-${kind}">${escapeHtml(levelLabel(kind, lang))}</span>`;
+}
+
+function renderReview(review) {
+  const summary = aggregate(review, reviewProfile);
+  const profile = PROFILES[reviewProfile] || PROFILES[DEFAULT_PROFILE];
+
+  // 蛛网图：基准线取当前目标画像
+  reviewRadarEl.innerHTML = buildRadarSvg({
+    review,
+    baseline: profile.baseline,
+    size: 330,
+    lang
+  });
+
+  reviewSummaryEl.innerHTML = [
+    `<span class="review-summary-item">${escapeHtml(t('reviewSummaryLevel'))} ${badge(summary.level)}</span>`,
+    `<span class="review-summary-item">${escapeHtml(t('reviewObjective'))} ${badge(summary.objectiveLevel)}</span>`,
+    `<span class="badge badge-unknown">${escapeHtml(t('reviewCoverage')(summary.coverage.known, summary.coverage.total))}</span>`,
+    summary.downgraded ? `<span class="badge badge-weak">${escapeHtml(t('reviewDowngraded'))}</span>` : ''
+  ].filter(Boolean).join(' ');
+
+  reviewAxesEl.innerHTML = AXES.map((def) => {
+    const entry = (review.axes || []).find((axis) => axis.id === def.id);
+    const level = entry?.level || 'unknown';
+    const evidence = (entry?.evidence || [])
+      .map((item) => {
+        const text = escapeHtml(item.title || item.note || item.url || '');
+        if (!item.url) return `<span>· ${text}</span>`;
+        return `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">· ${text}${item.note && item.title ? ` — ${escapeHtml(item.note)}` : ''}</a>`;
+      })
+      .join('');
+    return `<div class="axis-row">
+      <div class="axis-head">
+        <span class="axis-name${def.subjective ? ' is-subjective' : ''}">${escapeHtml(label(def.label))}</span>
+        ${badge(level)}
+      </div>
+      <div class="axis-measures">${escapeHtml(def.measures[lang] || def.measures.zh)}</div>
+      ${entry?.reason ? `<div class="axis-reason">${escapeHtml(entry.reason)}</div>` : ''}
+      <div class="axis-evidence">${evidence || `<span>${escapeHtml(t('reviewNoEvidence'))}</span>`}</div>
+    </div>`;
+  }).join('');
+
+  const gateToneKey = gateTone(review.gate?.level);
+  const blocked = review.gate?.level === 'blocked';
+  reviewGateEl.innerHTML = `<div class="gate-box${blocked ? ' is-blocked' : ''}">
+    <div class="gate-title${blocked ? ' is-blocked' : ''}">${escapeHtml(label(RESOURCE_GATE.label))} ${badge(gateToneKey)}</div>
+    ${review.gate?.reason ? `<div class="axis-reason">${escapeHtml(review.gate.reason)}</div>` : ''}
+    <div class="axis-evidence">${(review.gate?.evidence || [])
+      .map((item) => (item.url
+        ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">· ${escapeHtml(item.title || item.url)}</a>`
+        : `<span>· ${escapeHtml(item.title || item.note || '')}</span>`))
+      .join('')}</div>
+  </div>`;
+
+  reviewConclusionEl.textContent = review.conclusion || '';
+  reviewConclusionEl.classList.toggle('hidden', !review.conclusion);
+  clearStatus(reviewNotice);
+  show(reviewResultEl);
+
+  // trace 很长，会把图挤到屏幕外：出结果后折叠起来，留个入口想看再看
+  hide(reviewTracePanel);
+  show(reviewTraceToggle);
+  window.scrollTo(0, 0);
+}
+
+reviewTraceToggle.addEventListener('click', () => {
+  const isHidden = reviewTracePanel.classList.contains('hidden');
+  reviewTracePanel.classList.toggle('hidden', !isHidden);
+  reviewTraceToggle.textContent = isHidden ? t('hideTrace') : t('showTrace');
+  if (!isHidden) window.scrollTo(0, 0);
+});
+
+// 点轴上的依据链接在浏览器里打开
+reviewAxesEl.addEventListener('click', (event) => {
+  const link = event.target.closest('a[href]');
+  if (!link) return;
+  event.preventDefault();
+  chrome.tabs.create({ url: link.getAttribute('href'), active: true });
+});
+reviewGateEl.addEventListener('click', (event) => {
+  const link = event.target.closest('a[href]');
+  if (!link) return;
+  event.preventDefault();
+  chrome.tabs.create({ url: link.getAttribute('href'), active: true });
+});
+
+async function startReview() {
+  if (busyElsewhere('review', reviewTrace)) return;
+  if (!currentApiKey(state.llm)) {
+    setStatus(reviewNotice, 'error', t('errorApiKey'));
+    renderModelForm();
+    go('model');
+    return;
+  }
+
+  const prof = reviewProfessor();
+  const config = resolveConfig(state.llm);
+  currentReview = null;
+  hide(reviewResultEl);
+  resetTrace(reviewTrace);
+  show(reviewTracePanel);
+  hide(reviewTraceToggle);
+  clearStatus(reviewNotice);
+  setRunning('review', true);
+  activeRun = { kind: 'review', controller: new AbortController() };
+
+  const messages = [
+    {
+      role: 'system',
+      content: buildReviewSystemPrompt({
+        lang,
+        professor: prof || {},
+        profileId: reviewProfile,
+        storeBrief: store.brief()
+      })
+    },
+    { role: 'user', content: buildReviewTask({ lang, professor: prof || {} }) }
+  ];
+
+  const tools = createTools({
+    store,
+    ui: {
+      professorName: prof?.name || '',
+      onStoreChange: () => renderHome(),
+      onReview: (review, rec) => {
+        currentReview = review;
+        if (rec?.id) reviewTargetId = rec.id;
+        reviewProfile = review.targetProfile || reviewProfile;
+        if (currentPage === 'review') renderReviewPage();
+      }
+    }
+  });
+
+  try {
+    const result = await runAgent({
+      config,
+      tools,
+      messages,
+      // 7 条轴 + 闸门都要搜，默认给更多步数
+      maxSteps: Math.max(state.llm.maxSteps || DEFAULT_MAX_STEPS, REVIEW_MAX_STEPS),
+      // 一次要提交 7 条轴的档位+依据，输出预算给小了参数会被截断成非法 JSON
+      maxTokens: 6000,
+      onEvent: makeEventHandler(reviewTrace),
+      signal: activeRun.controller.signal
+    });
+
+    if (result.stopped) setStatus(reviewNotice, 'error', t('stopped'));
+    else if (currentReview) {
+      renderReviewPage();
+      setStatus(reviewNotice, 'success', t('reviewDone'));
+    } else setStatus(reviewNotice, 'error', t('reviewNoResult'));
+  } catch (e) {
+    setStatus(reviewNotice, 'error', t('aiError') + e.message);
+  } finally {
+    setRunning('review', false);
+    activeRun = null;
+    renderHome();
+  }
+}
+
+reviewRunBtn.addEventListener('click', startReview);
+reviewStopBtn.addEventListener('click', () => activeRun?.controller.abort());
+$('go-review-btn').addEventListener('click', () => openReview(currentDraft?.professorId));
 
 // ─── 邮件确认页 ─────────────────────────────────────────────────────────────
 function renderDraft({ to, subject, body, professorName }) {
@@ -708,12 +1024,16 @@ function renderCrm() {
       const options = STATUSES.map(
         (s) => `<option value="${s}"${s === p.status ? ' selected' : ''}>${escapeHtml(statusLabel(s))}</option>`
       ).join('');
+      const reviewed = p.reviews?.length
+        ? `<span class="badge badge-${aggregate(p.reviews[p.reviews.length - 1]).level}">🧭 ${escapeHtml(levelLabel(aggregate(p.reviews[p.reviews.length - 1]).level, lang))}</span>`
+        : '';
       return `<div class="prof-row" data-id="${p.id}">
         <div class="prof-row-main">
-          <div class="prof-row-name" title="${escapeHtml(p.summary || '')}">${escapeHtml(p.name || '未命名')}</div>
+          <div class="prof-row-name" title="${escapeHtml(p.summary || '')}">${escapeHtml(p.name || '未命名')} ${reviewed}</div>
           <div class="prof-row-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</div>
         </div>
         <select class="status-select" data-act="status">${options}</select>
+        <button class="icon-btn" data-act="review" title="${escapeHtml(t('reviewFromCrm'))}">🧭</button>
         <button class="icon-btn" data-act="open" title="打开主页">↗</button>
         <button class="icon-btn" data-act="del" title="删除">✕</button>
       </div>`;
@@ -731,6 +1051,10 @@ pipelineList.addEventListener('click', async (event) => {
     const rec = store.professors[id];
     if (rec?.homepageUrl) chrome.tabs.create({ url: rec.homepageUrl, active: true });
     else alert('这条记录没有保存主页链接');
+    return;
+  }
+  if (act === 'review') {
+    openReview(id);
     return;
   }
   if (act === 'del') {
@@ -776,6 +1100,7 @@ function updateTranslations() {
   });
 
   traceTitle.textContent = t('traceTitle');
+  reviewTraceToggle.textContent = reviewTracePanel.classList.contains('hidden') ? t('showTrace') : t('hideTrace');
   renderTaskPresets();
 
   const defaultTask = t('taskDefault');

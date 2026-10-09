@@ -66,6 +66,18 @@ const PROFESSOR_PAGE = `<!DOCTYPE html>
 <footer>版权所有</footer>
 </body></html>`;
 
+// 评价用的档位设计：产业/弹性强、天花板/势能弱 —— 这样"读博"和"硕士就业"两个画像会给出不同结论
+const REVIEW_LEVELS = [
+  ['fit', '稳'],
+  ['momentum', '拉'],
+  ['industry', '夯'],
+  ['flexibility', '夯'],
+  ['ceiling', '拉'],
+  ['achievability', '一般'],
+  ['competition', '一般']
+];
+const REVIEW_EVIDENCE = [{ title: '示例来源（本地）', url: `http://127.0.0.1:${APP_PORT}/prof`, note: '测试依据：2025 年岗位量同比 +30%' }];
+
 function mockChatResponse(body, n) {
   const messages = body.messages || [];
   const toolResults = messages.filter((m) => m.role === 'tool');
@@ -78,6 +90,13 @@ function mockChatResponse(body, n) {
     function: { name, arguments: JSON.stringify(args) }
   });
 
+  // 伪造"参数被输出长度截断"的工具调用（真实的 max_tokens 截断长这样）
+  const truncatedToolCall = (name, argsString) => ({
+    id: `call_${n}_${name}_cut`,
+    type: 'function',
+    function: { name, arguments: argsString }
+  });
+
   const reply = (tool_calls, content = null) => ({
     id: `chatcmpl-${n}`,
     object: 'chat.completion',
@@ -85,6 +104,72 @@ function mockChatResponse(body, n) {
     model: body.model,
     choices: [{ index: 0, message: { role: 'assistant', content, tool_calls }, finish_reason: tool_calls ? 'tool_calls' : 'stop' }]
   });
+
+  // ── 研究方向评价流程（用系统提示词区分是写邮件还是做评价）──
+  if (/评估员|research-direction evaluator/.test(system)) {
+    const round = (mockState.reviewRequests = (mockState.reviewRequests || 0) + 1);
+
+    if (round === 1) {
+      for (const axis of ['基础匹配度', '成长势能', '产业需求度', '就业弹性', '学术天花板', '毕业可达性', '竞争友好度']) {
+        if (!system.includes(axis)) mockState.problems.push(`评价提示词缺轴：${axis}`);
+      }
+      if (!/必须先联网搜索/.test(system)) mockState.problems.push('评价提示词没有要求先联网搜索');
+      if (!/评分锚点/.test(system)) mockState.problems.push('评价提示词缺四档评分锚点');
+      if (!/资源可获得性/.test(system)) mockState.problems.push('评价提示词缺资源闸门');
+      if (!system.includes('读博')) mockState.problems.push('评价提示词缺目标画像');
+      if (!/不是评价导师本人|not the professor as a person/.test(system)) mockState.problems.push('评价提示词没有划清"只评方向"的边界');
+      if (!body.tools?.some((t) => t.function?.name === 'save_review')) mockState.problems.push('save_review 工具没传给模型');
+      if (!lastUser?.content?.includes('研究方向')) mockState.problems.push('评价任务描述没传给模型');
+
+      return reply([
+        toolCall('search_web', { query: '自然语言处理 论文数量 2024 2025 趋势' }),
+        toolCall('visit_page', { url: `http://127.0.0.1:${APP_PORT}/prof` })
+      ]);
+    }
+
+    if (round === 2) {
+      const text = toolResults.map((m) => m.content).join('\n');
+      if (!text.includes('张伟')) mockState.problems.push('visit_page 的观察结果没进上下文');
+      if (/"error"|搜索失败/.test(text)) mockState.searchFailed = true; // 离线环境允许搜索失败，但要优雅降级
+      // 第一次提交故意"被截断"：验证 agent 不会因此整轮失败，而是拿到错误后重写
+      return reply([
+        truncatedToolCall('save_review', '{"axes":[{"id":"fit","level":"稳","reason":"技能栈与工业界内')
+      ]);
+    }
+
+    if (round === 3) {
+      const text = toolResults.map((m) => m.content).join('\n');
+      if (!/参数解析失败/.test(text)) mockState.problems.push('截断的参数没有被回填成"参数解析失败"（整轮应该自愈而不是报错）');
+      // 第二次：格式合法但两条轴缺依据，验证工具会拦下并要求继续搜
+      const axes = REVIEW_LEVELS.map(([id, level], i) =>
+        i < 2 ? { id, level } : { id, level, reason: '测试理由', evidence: REVIEW_EVIDENCE }
+      );
+      return reply([
+        toolCall('save_review', {
+          axes,
+          gate: { level: '一般', reason: '算力可租，数据公开', evidence: REVIEW_EVIDENCE },
+          target_profile: 'phd',
+          conclusion: '不完整测试'
+        })
+      ]);
+    }
+
+    if (round === 4) {
+      const text = toolResults.map((m) => m.content).join('\n');
+      if (!/评价不完整/.test(text)) mockState.problems.push('缺依据的评价没有被拦下（应该报"评价不完整"）');
+      const axes = REVIEW_LEVELS.map(([id, level]) => ({ id, level, reason: '测试理由', evidence: REVIEW_EVIDENCE }));
+      return reply([
+        toolCall('save_review', {
+          axes,
+          gate: { level: '一般', reason: '算力可租，数据公开', evidence: REVIEW_EVIDENCE },
+          target_profile: 'phd',
+          conclusion: '这个方向产业需求强、就业弹性大，适合硕士就业导向；最大风险是学术天花板偏低，读博要谨慎。'
+        })
+      ]);
+    }
+
+    return reply(null, '评价完成：7 条轴已定档，资源闸门一般。');
+  }
 
   // 第 0 轮：先读页面；同时检查学生资料有没有进系统提示词
   if (n === 0) {
@@ -275,9 +360,10 @@ const fill = (selector, value) =>
     return el.value;
   })()`);
 
-// 当前可见的页面（期望任何时刻只有一个）
+// 当前可见的页面（期望任何时刻只有一个）—— 加了新页面必须同步加进来，
+// 否则这条"单页可见"的不变式就会漏掉新功能
 const visiblePages = () =>
-  ev(`(() => ['home','task','result','crm','profile','model']
+  ev(`(() => ['home','task','result','crm','profile','model','review']
         .filter((p) => getComputedStyle(document.getElementById('page-' + p)).display !== 'none'))()`);
 
 const storage = (key) =>
@@ -539,6 +625,128 @@ async function main() {
   await cdp.send('Target.activateTarget', { targetId: panel.targetId }).catch(() => {});
   record('导师库截图已保存', true, await capture('last-run-crm.png'));
 
+  // ── ⑤ 研究方向评价：从导师库那一行的 🧭 进入，联网搜索后出蛛网图
+  await click('#pipeline-list .prof-row [data-act="review"]');
+  await sleep(500);
+  const reviewPages = await visiblePages();
+  const reviewEmpty = await ev(`document.getElementById('review-notice').textContent.trim()`);
+  const profileChips = await ev(`document.querySelectorAll('#review-profile-selector .model-btn').length`);
+  record('从导师库进入评价页', reviewPages.length === 1 && reviewPages[0] === 'review', reviewPages.join(','));
+  record('评价页有空状态说明 + 3 个目标画像', profileChips === 3 && reviewEmpty.includes('还没有评价过'), `${profileChips} 个画像`);
+  const activeProfile = await ev(`document.querySelector('#review-profile-selector .model-btn.active')?.dataset.profile`);
+  record('默认目标画像=读博', activeProfile === 'phd', activeProfile);
+
+  await click('#review-run-btn');
+  const reviewFinished = await waitFor(async () => {
+    const state = await ev(`(() => {
+      const box = document.querySelector('#review-notice .status-box');
+      const text = box?.textContent || '';
+      if (!text) return null;
+      if (text.includes('AI 调用失败') || text.includes('已手动停止')) return { ok: false, text };
+      if (text.includes('完成')) return { ok: true, text };
+      return null;
+    })()`);
+    return state;
+  }, { timeout: 60000, interval: 500, label: '评价任务跑完' });
+  record('评价任务跑完', reviewFinished.ok, reviewFinished.text.trim());
+
+  const radar = await ev(`(() => {
+    const svg = document.querySelector('#review-radar svg');
+    return {
+      hasSvg: !!svg,
+      viewBox: svg?.getAttribute('viewBox') || '',
+      scorePoints: (document.querySelector('#review-radar .radar-score')?.getAttribute('points') || '').split(' ').length,
+      axisLabels: [...document.querySelectorAll('#review-radar .radar-axis-label')].map((el) => el.textContent),
+      hasBaseline: !!document.querySelector('#review-radar .radar-baseline'),
+      subjectiveVertex: !!document.querySelector('#review-radar .radar-vertex.subjective'),
+      rows: document.querySelectorAll('#review-axes .axis-row').length,
+      axisNames: [...document.querySelectorAll('#review-axes .axis-name')].map((el) => el.textContent),
+      evidenceLinks: document.querySelectorAll('#review-axes .axis-evidence a').length,
+      summaryBadges: [...document.querySelectorAll('#review-summary .badge')].map((el) => el.className),
+      coverage: document.getElementById('review-summary').textContent,
+      gate: document.getElementById('review-gate').textContent.trim(),
+      conclusion: document.getElementById('review-conclusion').textContent.trim()
+    };
+  })()`);
+
+  record(
+    '蛛网图渲染：7 个顶点 + 基准虚线 + 自评色顶点',
+    radar.hasSvg && radar.scorePoints === 7 && radar.hasBaseline && radar.subjectiveVertex,
+    `viewBox=${radar.viewBox} points=${radar.scorePoints}`
+  );
+  record(
+    '图的轴名完整',
+    ['匹配', '势能', '产业', '弹性', '天花板', '可达', '竞争'].every((name) => radar.axisLabels.includes(name)),
+    radar.axisLabels.join('/')
+  );
+  record('7 条轴的档位与理由都渲染', radar.rows === 7, `rows=${radar.rows} → ${radar.axisNames.join('、')}`);
+  record('每条轴的网络依据都带链接', radar.evidenceLinks >= 5, `${radar.evidenceLinks} 条链接`);
+  record('资源闸门与总结都显示', /资源/.test(radar.gate) && radar.conclusion.length > 0, radar.gate.slice(0, 40));
+
+  // DOM 里有值 ≠ 用户看得见：确认出结果后 trace 自动折叠、图在首屏
+  const layout = await ev(`(() => {
+    const svg = document.querySelector('#review-radar svg');
+    const rect = svg ? svg.getBoundingClientRect() : null;
+    return {
+      traceHidden: document.getElementById('review-trace-panel').classList.contains('hidden'),
+      resultVisible: getComputedStyle(document.getElementById('review-result')).display !== 'none',
+      toggleVisible: !document.getElementById('review-trace-toggle').classList.contains('hidden'),
+      toggleText: document.getElementById('review-trace-toggle').textContent.trim(),
+      radarTop: rect ? Math.round(rect.top) : null
+    };
+  })()`);
+  record(
+    '出结果后自动折叠搜索过程，图在首屏可见',
+    layout.traceHidden && layout.resultVisible && layout.toggleVisible && layout.radarTop !== null && layout.radarTop < 600,
+    `radarTop=${layout.radarTop}px 开关="${layout.toggleText}"`
+  );
+  await click('#review-trace-toggle');
+  await sleep(200);
+  const reExpanded = await ev(`!document.getElementById('review-trace-panel').classList.contains('hidden')`);
+  const traceText = await ev(`document.getElementById('review-trace-body').textContent`);
+  record('搜索过程可以展开回看', reExpanded === true, '');
+  record(
+    '搜索过程里能看到「参数解析失败 → 重写」的自愈过程',
+    /参数解析失败/.test(traceText) && /评价不完整/.test(traceText),
+    ''
+  );
+  await click('#review-trace-toggle');
+  await sleep(200);
+  record('读博画像下综合档位=一般', radar.summaryBadges.some((c) => c.includes('badge-fair')), radar.summaryBadges.join(' '));
+  record('数据覆盖 7/7', /7\/7/.test(radar.coverage), radar.coverage.replace(/\s+/g, ' ').slice(0, 60));
+
+  // 切目标画像：权重和基准线都是本地算的，不该再调一次模型
+  const reportBefore = await (await fetch(`http://127.0.0.1:${APP_PORT}/__report`)).json();
+  await click('#review-profile-selector .model-btn[data-profile="master"]');
+  await sleep(400);
+  const afterSwitch = await ev(`[...document.querySelectorAll('#review-summary .badge')].map((el) => el.className).join(' ')`);
+  const reportAfter = await (await fetch(`http://127.0.0.1:${APP_PORT}/__report`)).json();
+  record('切到硕士就业后综合档位变成稳（权重随目标变）', afterSwitch.includes('badge-solid'), afterSwitch);
+  record(
+    '切画像不重新调用模型（纯本地重算）',
+    reportBefore.reviewRequests === reportAfter.reviewRequests,
+    `review 请求数 ${reportBefore.reviewRequests} → ${reportAfter.reviewRequests}`
+  );
+
+  const storedReview = await ev(`chrome.storage.local.get('professors').then((d) => {
+    const p = Object.values(d.professors || {})[0] || {};
+    const last = (p.reviews || [])[0];
+    return {
+      count: (p.reviews || []).length,
+      axes: (last?.axes || []).length,
+      withEvidence: (last?.axes || []).filter((a) => a.evidence?.length).length,
+      profile: last?.targetProfile,
+      gate: last?.gate?.level,
+      conclusion: last?.conclusion || ''
+    };
+  })`);
+  record(
+    '评价存入导师库（7 条轴 + 依据 + 闸门 + 画像）',
+    storedReview.count === 1 && storedReview.axes === 7 && storedReview.withEvidence === 7 && storedReview.gate === 'medium',
+    JSON.stringify(storedReview).slice(0, 160)
+  );
+  record('评价页截图已保存', true, await capture('last-run-review.png'));
+
   // ── ⑤ 关掉侧边栏再打开：持久化 + 只显示主页（用户报过的两个 bug）
   await cdp.send('Target.closeTarget', { targetId: panel.targetId });
   await sleep(500);
@@ -575,8 +783,14 @@ async function main() {
 
   // ── ⑥ mock 侧与页面异常
   const report = await (await fetch(`http://127.0.0.1:${APP_PORT}/__report`)).json();
-  record('模型被调用了 4 轮', report.requests.length === 4, report.requests.map((r) => r.tools?.length).join(','));
-  record('mock 侧断言全过（含资料进入提示词）', report.problems.length === 0, report.problems.join('; '));
+  record('模型共被调用 9 轮（写邮件 4 + 评价 5）', report.requests.length === 9, `${report.requests.length} 轮`);
+  record('评价流程独立成一次 agent 运行', report.reviewRequests === 5, `${report.reviewRequests} 轮`);
+  record(
+    '联网搜索在上下文里出现',
+    true,
+    report.searchFailed ? '本机环境未能连外网，工具已返回结构化错误并优雅降级' : '搜索成功返回结果'
+  );
+  record('mock 侧断言全过（含资料进提示词、截断自愈、缺依据被拦下）', report.problems.length === 0, report.problems.join('; '));
   record('浏览器无 JS 异常', panelExceptions.length === 0, panelExceptions.slice(0, 2).join(' | '));
 }
 
